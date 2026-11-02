@@ -2,10 +2,14 @@
 #if TARGET_OS_IOS
 #import <VLCKit/vlc/vlc.h>
 #import <limits.h>
+#import <stdatomic.h>
+#import <stdint.h>
 
 @interface ESVLCSessionOutput ()
 - (void)handleMedia:(libvlc_media_t *)media;
-- (void)handleState;
+- (void)handleState:(BOOL)failed mediaIdentity:(uintptr_t)mediaIdentity;
+- (void)recordCallbackMedia:(libvlc_media_t *)media;
+- (uintptr_t)callbackMediaIdentity;
 - (void)handlePosition;
 - (void)handleLength:(int64_t)length;
 - (void)handleClockUpdate:(libvlc_media_player_time_point_t)point;
@@ -17,12 +21,15 @@
 
 static void ESMediaChanged(void *opaque, libvlc_media_t *media) {
   ESVLCSessionOutput *output = (__bridge ESVLCSessionOutput *)opaque;
+  [output recordCallbackMedia:media];
   if (media) libvlc_media_retain(media);
   dispatch_async(dispatch_get_main_queue(), ^{ [output handleMedia:media]; if (media) libvlc_media_release(media); });
 }
 static void ESStateChanged(void *opaque, libvlc_state_t state) {
   ESVLCSessionOutput *output = (__bridge ESVLCSessionOutput *)opaque;
-  dispatch_async(dispatch_get_main_queue(), ^{ [output handleState]; });
+  uintptr_t mediaIdentity = [output callbackMediaIdentity];
+  BOOL failed = state == libvlc_Error;
+  dispatch_async(dispatch_get_main_queue(), ^{ [output handleState:failed mediaIdentity:mediaIdentity]; });
 }
 static void ESClockUpdate(void *opaque, const libvlc_media_player_time_point_t *point) {
   ESVLCSessionOutput *output = (__bridge ESVLCSessionOutput *)opaque;
@@ -69,6 +76,7 @@ static const struct libvlc_media_player_watch_time_cbs ESClockCallbacks = {
 };
 
 @implementation ESVLCSessionOutput {
+  _Atomic(uintptr_t) _callbackMedia;
   libvlc_media_list_player_t *_list;
   libvlc_media_player_t *_native;
   NSMapTable<VLCMedia *, NSValue *> *_mediaToNative;
@@ -84,6 +92,7 @@ static const struct libvlc_media_player_watch_time_cbs ESClockCallbacks = {
 - (instancetype)init { return [self initWithOptions:nil]; }
 - (instancetype)initWithOptions:(NSArray<NSString *> *)options {
   if (!(self = [super init])) return nil;
+  atomic_init(&_callbackMedia, 0);
   _library = options ? [[VLCLibrary alloc] initWithOptions:options] : [VLCLibrary sharedLibrary];
   if (!_library || !_library.instance) return nil;
   _mediaToNative = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsStrongMemory | NSPointerFunctionsObjectPointerPersonality valueOptions:NSPointerFunctionsStrongMemory];
@@ -152,10 +161,17 @@ static const struct libvlc_media_player_watch_time_cbs ESClockCallbacks = {
   [_seekCompletions removeAllObjects];
   for (void (^completion)(void) in completions) completion();
 }
-- (void)handleState {
+- (void)recordCallbackMedia:(libvlc_media_t *)media {
+  atomic_store_explicit(&_callbackMedia, (uintptr_t)media, memory_order_release);
+}
+- (uintptr_t)callbackMediaIdentity {
+  return atomic_load_explicit(&_callbackMedia, memory_order_acquire);
+}
+- (void)handleState:(BOOL)failed mediaIdentity:(uintptr_t)mediaIdentity {
   if (_closed) return;
   if (self.isPlayerStopped) { _clockSeeking = NO; [self finishSeeks]; }
-  if (self.stateChanged) self.stateChanged();
+  VLCMedia *media = mediaIdentity ? _nativeToMedia[[NSValue valueWithPointer:(void *)mediaIdentity]] : nil;
+  if (self.stateChanged) self.stateChanged(failed, media);
 }
 - (void)handlePosition { if (!_closed && self.timeChanged) self.timeChanged(); }
 - (void)handleTracksChanged { if (!_closed && self.tracksChanged) self.tracksChanged(); }

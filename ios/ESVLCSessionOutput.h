@@ -12,7 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) int32_t positionMillis;
 @property (nonatomic, readonly) int32_t durationMillis;
 @property (nonatomic, copy, nullable) void (^mediaChanged)(VLCMedia *media);
-@property (nonatomic, copy, nullable) void (^stateChanged)(void);
+@property (nonatomic, copy, nullable) void (^stateChanged)(BOOL failed, VLCMedia * _Nullable media);
 @property (nonatomic, copy, nullable) void (^timeChanged)(void);
 @property (nonatomic, copy, nullable) void (^seekFinished)(void);
 @property (nonatomic, copy, nullable) void (^tracksChanged)(void);

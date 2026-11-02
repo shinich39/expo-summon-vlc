@@ -92,7 +92,7 @@ private final class PlayerSession: NSObject {
     self.frames = frames
     super.init()
     videoOutput.mediaChanged = { [weak self] media in self?.mediaChanged(media) }
-    videoOutput.stateChanged = { [weak self] in self?.mediaPlayerStateChanged() }
+    videoOutput.stateChanged = { [weak self] failed, media in self?.mediaPlayerStateChanged(failed: failed, media: media) }
     videoOutput.lengthChanged = { [weak self] length in self?.mediaPlayerLengthChanged(length) }
     videoOutput.timeChanged = { [weak self] in self?.mediaPlayerTimeChanged() }
     videoOutput.tracksChanged = { [weak self] in self?.onTracksChange?() }
@@ -307,7 +307,21 @@ private final class PlayerSession: NSObject {
     ControlCenter.shared.refresh(self)
   }
 
-  func mediaPlayerStateChanged() {
+  func mediaPlayerStateChanged(failed: Bool, media: VLCMedia?) {
+    guard !releaseInProgress else { return }
+    if failed, transitionPhase != nil, let target = transitionTargetIndex,
+       playlistMedia.indices.contains(target), media === playlistMedia[target] {
+      transitionToken += 1
+      transitionPhase = nil
+      transitionTargetIndex = nil
+      transitionReady = false
+      if pendingSelection != nil { beginTransition(); return }
+      transitionFailed = true
+      transitionMismatch = false
+      autoAdvanceArmed = false
+      onStateChange?()
+      return
+    }
     if player.isPlaying && !audioDelayApplied {
       audioDelayApplied = player.setAudioDelay(millis: audioDelayMillis)
     }
