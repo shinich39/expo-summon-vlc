@@ -1337,17 +1337,23 @@ public class ExpoSummonVlcModule: Module {
   }
   private func subtitleStyleOptions(_ style: [String: Double]) throws -> [String] {
     let limits: [String: ClosedRange<Double>] = ["fontScale": 0.5...3, "backgroundColor": 0...16777215, "backgroundOpacity": 0...255, "outlineColor": 0...16777215, "outlineWidth": 0...5, "bottomMargin": 0...500]
-    guard Set(style.keys) == Set(limits.keys), limits.allSatisfy({ key, range in
+    guard Set(style.keys).subtracting(["alignment", "textColor"]) == Set(limits.keys),
+          style["textColor"].map({ $0.isFinite && (0...16777215).contains($0) && $0.rounded() == $0 }) ?? true,
+          style["alignment"].map({ [-1.0, 0.0, 1.0, 2.0].contains($0) }) ?? true,
+          limits.allSatisfy({ key, range in
       guard let value = style[key], value.isFinite, range.contains(value) else { return false }
       return key == "fontScale" || value.rounded() == value
     }) else { throw NSError(domain: "ExpoSummonVlc.Subtitles", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid subtitle style"] ) }
-    return ["--sub-text-scale=\(Int((style["fontScale"]! * 100).rounded()))",
+    var options = ["--sub-text-scale=\(Int((style["fontScale"]! * 100).rounded()))",
             "--freetype-background-color=\(Int(style["backgroundColor"]!))",
             "--freetype-background-opacity=\(Int(style["backgroundOpacity"]!))",
             "--freetype-outline-color=\(Int(style["outlineColor"]!))",
             "--freetype-outline-opacity=255",
             "--freetype-outline-thickness=\(Int(style["outlineWidth"]!))",
             "--sub-margin=\(Int(style["bottomMargin"]!))"]
+    if let color = style["textColor"] { options.append("--freetype-color=\(Int(color))") }
+    if let alignment = style["alignment"] { options.append("--subsdec-align=\(Int(alignment))") }
+    return options
   }
   private func createPlayerSession(options: [String]?) throws -> String {
     guard Sessions.pendingCleanup == 0 else {

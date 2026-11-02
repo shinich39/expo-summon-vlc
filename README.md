@@ -220,15 +220,17 @@ Subtitle preferences may be applied when creating a new session:
 ```ts
 const sessionId = await Player.createSessionWithSubtitleStyle({
   fontScale: 1.5,
+  textColor: 0xffff00, // optional RGB
   backgroundColor: 0x000000,
   backgroundOpacity: 160,
   outlineColor: 0x000000,
   outlineWidth: 4,
   bottomMargin: 30,
+  alignment: 1, // -1 auto, 0 center, 1 left, 2 right
 });
 ```
 
-Text color is not configurable through this API. Subtitle formats with embedded styling and bitmap subtitles may override or ignore preferences. A styled session creates its own VLC instance. `getSubtitleStyleCapabilities()` reports supported operations; `setSubtitleFontScale(sessionId, scale)` changes font scale on iOS only, while other style changes require a new session.
+Alignment is applied when the session is created to text subtitles handled by VLC’s text subtitle decoder; other subtitle formats may ignore it. Text color is an optional RGB preference and may be overridden by the subtitle format. Subtitle formats with embedded styling and bitmap subtitles may override or ignore preferences. A styled session creates its own VLC instance. `getSubtitleStyleCapabilities()` reports supported operations; `setSubtitleFontScale(sessionId, scale)` changes font scale on iOS only, while other style changes require a new session.
 
 ## Picture in Picture
 
@@ -299,7 +301,7 @@ See the [example guide](example/README.md) for the test controls and the experim
 - PiP transitions, restoration, seeking and resource cleanup need broader device testing.
 - Android: Precise seeking and live subtitle font scaling are not supported.
 - Android: PiP state events depend on host activity support; no foreground playback service is provided.
-- Video rotation and subtitle text color are not supported.
+- Video rotation is not supported.
 - Thumbnail generation requires a local file and may not support all VLC-playable formats.
 
 ## Acknowledgements

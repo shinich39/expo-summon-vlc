@@ -85,6 +85,8 @@ export type PlaybackTrackType = 'audio' | 'subtitle';
 export type SubtitleStyle = {
   /** Relative to VLC's default, from 0.5 to 3. */
   fontScale: number;
+  /** Optional 24-bit RGB text color; subtitle styles may override it. */
+  textColor?: number;
   /** 24-bit RGB color, e.g. 0xffffff. */
   backgroundColor: number;
   /** Background opacity from 0 to 255. */
@@ -94,6 +96,8 @@ export type SubtitleStyle = {
   outlineWidth: number;
   /** Bottom margin in VLC output pixels, from 0 to 500. */
   bottomMargin: number;
+  /** Text alignment: -1 auto (default), 0 center, 1 left, 2 right. */
+  alignment?: -1 | 0 | 1 | 2;
 };
 
 export type SubtitleStyleCapabilities = {

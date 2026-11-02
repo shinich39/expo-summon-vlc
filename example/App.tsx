@@ -71,14 +71,13 @@ export default function App() {
   const [secondUri, setSecondUri] = useState('https://cdn.truefilesize.com/mp4/sample-portrait.mp4');
   const [message, setMessage] = useState('Creating session…');
   const [busy, setBusy] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [ready, setReady] = useState(false);
   const [resizeMode, setResizeMode] = useState<VideoResizeMode>('contain');
   const [playlistSize, setPlaylistSize] = useState(0);
   const [playlistItems, setPlaylistItems] = useState<PlaylistItem[]>([]);
   const [playlistEditing, setPlaylistEditing] = useState(false);
   const [errorTestResult, setErrorTestResult] = useState<string | null>(null);
-  const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>({ fontScale: 1.5, backgroundColor: 0, backgroundOpacity: 0, outlineColor: 0, outlineWidth: 4, bottomMargin: 30 });
+  const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>({ fontScale: 1.5, textColor: 0xffffff, backgroundColor: 0, backgroundOpacity: 0, outlineColor: 0, outlineWidth: 4, bottomMargin: 30, alignment: -1 });
   const [appliedSubtitleStyle, setAppliedSubtitleStyle] = useState<SubtitleStyle | null>(null);
   const [playback, setPlayback] = useState<PlaybackStatus | null>(null);
   const [trackState, setTrackState] = useState<{ sessionId: string; snapshot: PlaybackTracks } | null>(null);
@@ -192,18 +191,18 @@ export default function App() {
     };
   }, []);
 
-  async function createSession(styled = false) {
+  async function createSession() {
     if (sessionOperation.current || sessionRef.current) return;
     sessionOperation.current = true;
     setSessionBusy(true);
     try {
-      const id = styled ? await Player.createSessionWithSubtitleStyle(subtitleStyle) : await Player.createSession();
+      const id = await Player.createSession();
       if (!mounted.current) { await Player.release(id); return; }
       sessionRef.current = id;
       setSessionId(id);
-      setAppliedSubtitleStyle(styled ? { ...subtitleStyle } : null);
+      setAppliedSubtitleStyle(null);
       setSessionCounts((counts) => ({ ...counts, created: counts.created + 1 }));
-      setMessage(styled ? 'Styled session created. Use the subtitle test controls.' : 'Session created. Load the local playlist.');
+      setMessage('Session created. Load the local playlist.');
       record('Session created');
     } catch (error) {
       if (mounted.current) setMessage(`Create session: ${String(error)}`);
@@ -503,13 +502,13 @@ export default function App() {
   }
 
   async function subtitleFixtureUri(): Promise<string> {
-    const source = Image.resolveAssetSource(require('./assets/subtitle-fixture/subtitles.mp4'));
+    const source = Image.resolveAssetSource(require('./assets/subtitle-fixture/subtitles-text.mkv'));
     if (!source?.uri) throw new Error('Subtitle test video is unavailable');
     if (source.uri.startsWith('file://')) return source.uri;
     if (!/^https?:\/\//i.test(source.uri)) throw new Error(`Unsupported asset URI: ${source.uri}`);
     const directory = new Directory(Paths.document, 'subtitle-fixture');
     directory.create({ intermediates: true, idempotent: true });
-    const file = new File(directory, 'subtitles-v1.mp4');
+    const file = new File(directory, 'subtitles-text-v1.mkv');
     if (!file.exists || file.size === 0) {
       if (file.exists) file.delete();
       await File.downloadFileAsync(source.uri, file);
@@ -807,9 +806,11 @@ export default function App() {
 
   return (
     <SafeAreaView style={[styles.root, Platform.OS === 'android' && pipMode && styles.pipRoot]}>
-      <ScrollView contentContainerStyle={[styles.content, Platform.OS === 'android' && pipMode && styles.pipContent]} keyboardShouldPersistTaps="handled" removeClippedSubviews={false}>
-        <Text style={[styles.title, Platform.OS === 'android' && pipMode && styles.hidden]}>Local playlist transition</Text>
+      <View style={Platform.OS === 'android' && pipMode ? styles.pipVideoContainer : styles.videoContainer}>
         {sessionId ? <PlayerView sessionId={sessionId} resizeMode={resizeMode} style={Platform.OS === 'android' && pipMode ? styles.pipVideo : styles.video} /> : <View style={Platform.OS === 'android' && pipMode ? styles.pipVideo : styles.video} />}
+      </View>
+      <ScrollView style={Platform.OS === 'android' && pipMode ? styles.hidden : undefined} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" removeClippedSubviews={false}>
+        <Text style={styles.title}>Local playlist transition</Text>
         <View style={Platform.OS === 'android' && pipMode ? styles.hidden : styles.controlGroup}>
         <Text>Video fit: {resizeMode}</Text>
         <View style={styles.controls}>
@@ -901,11 +902,8 @@ export default function App() {
             <Button title="Remove" disabled={playlistEditing} onPress={() => void editPlaylist((id) => Player.removeItem(id, item.id))} />
           </View>
         </View>)}
-        <Button title={showAdvanced ? 'Hide previous tests' : 'Show previous tests'} onPress={() => setShowAdvanced((value) => !value)} />
-        {showAdvanced && <View style={styles.controlGroup}>
         <Text style={styles.heading}>Subtitle test</Text>
-        <Text>Start the test video with subtitles selected and repeat it automatically using the chosen style.</Text>
-        <Button title="Start subtitle test" disabled={sessionBusy || busy || probeActive || analysisBusy || (Platform.OS === 'android' && pipMode)} onPress={() => void startSubtitleTest()} />
+        <Text>Choose a style below, then start the video with subtitles selected and repeat enabled.</Text>
         <Text>Session: {sessionBusy ? 'working…' : sessionId ? `active (${sessionId})` : 'released'} · Created: {sessionCounts.created} · Released: {sessionCounts.released}</Text>
         <Text>Counts track successful requests in this screen, not native memory usage.</Text>
         <View style={styles.controls}>
@@ -913,17 +911,27 @@ export default function App() {
           <Button title="Release session" disabled={!sessionId || sessionBusy || busy || probeActive || (Platform.OS === 'android' && pipMode)} onPress={() => void releaseSession()} />
         </View>
         <Text style={styles.heading}>Subtitle style for a new session</Text>
-        <Text>Release the current session, choose a style, then create a styled session. The settings apply to text subtitles supported by VLC.</Text>
+        <Text>Starting the test replaces the current session and applies these settings to supported text subtitles.</Text>
         <Text>Current session: {!sessionId ? 'none' : appliedSubtitleStyle ? 'styled' : 'default VLC style'}.</Text>
         <View style={styles.controls}>
           <Button title="Size −" onPress={() => setSubtitleStyle((s) => ({ ...s, fontScale: Math.max(0.5, Math.round((s.fontScale - 0.25) * 100) / 100) }))} />
           <Text>Size {subtitleStyle.fontScale}×</Text>
           <Button title="Size +" onPress={() => setSubtitleStyle((s) => ({ ...s, fontScale: Math.min(3, Math.round((s.fontScale + 0.25) * 100) / 100) }))} />
         </View>
+        <View style={styles.controls}>
+          {([[0xffffff, 'White'], [0x000000, 'Black'], [0xffff00, 'Yellow']] as const).map(([color, label]) => (
+            <Button key={color} title={`${subtitleStyle.textColor === color ? '✓ ' : ''}${label}`} onPress={() => setSubtitleStyle((style) => ({ ...style, textColor: color, outlineColor: color === 0 ? 0xffffff : 0x000000, outlineWidth: 4 }))} />
+          ))}
+        </View>
         <Button title={`Background: ${subtitleStyle.backgroundOpacity === 0 ? 'off' : 'black'}`} onPress={() => setSubtitleStyle((s) => ({ ...s, backgroundOpacity: s.backgroundOpacity === 0 ? 160 : 0 }))} />
         <Button title={`Outline: ${subtitleStyle.outlineWidth === 0 ? 'off' : 'on'}`} onPress={() => setSubtitleStyle((s) => ({ ...s, outlineWidth: s.outlineWidth === 0 ? 4 : 0 }))} />
+        <View style={styles.controls}>
+          {([[-1, 'Auto'], [0, 'Center'], [1, 'Left'], [2, 'Right']] as const).map(([value, label]) => (
+            <Button key={value} title={`${subtitleStyle.alignment === value ? '✓ ' : ''}${label}`} onPress={() => setSubtitleStyle((style) => ({ ...style, alignment: value }))} />
+          ))}
+        </View>
         <Button title={`Bottom margin: ${subtitleStyle.bottomMargin}px`} onPress={() => setSubtitleStyle((s) => ({ ...s, bottomMargin: s.bottomMargin === 0 ? 30 : 0 }))} />
-        <Button title="Create styled session" disabled={!!sessionId || sessionBusy} onPress={() => void createSession(true)} />
+        <Button title="Start subtitle test" disabled={sessionBusy || busy || probeActive || analysisBusy || (Platform.OS === 'android' && pipMode)} onPress={() => void startSubtitleTest()} />
         {Platform.OS === 'ios' && <Button title="Apply size to current session" disabled={!sessionId || sessionBusy} onPress={() => { if (sessionId) void Player.setSubtitleFontScale(sessionId, subtitleStyle.fontScale).catch((error: unknown) => setMessage(`Subtitle size: ${String(error)}`)); }} />}
         <Text>Video 1 URL</Text>
         <TextInput style={styles.input} value={firstUri} onChangeText={(text) => { setFirstUri(text); setAnalysisUri(null); }} autoCapitalize="none" autoCorrect={false} />
@@ -973,7 +981,6 @@ export default function App() {
         <Text>Progress uses native events; transition history uses native state events.</Text>
         <Text style={styles.heading}>Recent transitions</Text>
         {history.map((entry, index) => <Text key={`${index}-${entry}`}>{entry}</Text>)}
-        </View>}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -984,7 +991,8 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: 'white' },
   pipRoot: { backgroundColor: 'black' },
   content: { padding: 16, gap: 12 },
-  pipContent: { padding: 0, gap: 0, flexGrow: 1, justifyContent: 'center' },
+  videoContainer: { paddingHorizontal: 16, paddingTop: 16 },
+  pipVideoContainer: { flex: 1 },
   title: { fontSize: 22, fontWeight: '600' },
   heading: { fontWeight: '600' },
   hidden: { display: 'none' },

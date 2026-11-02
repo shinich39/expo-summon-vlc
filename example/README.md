@@ -280,8 +280,8 @@ audio and subtitle tracks. Choose **Subtitles off** to disable subtitles. The
 list is a snapshot; refresh it after a file change. Selection changes update
 the visible list after the native player reports them.
 The default playlist videos do not contain separate subtitle streams. Use
-Open **Show previous tests** and use **Start subtitle test** to create a styled
-session, start the bundled MP4, select an English subtitle and repeat the video.
+Use **Start subtitle test** to create a styled
+session, start the bundled MKV with embedded SubRip subtitles, select an English subtitle and repeat the video.
 The on-screen text changes at 5 and 10 seconds. The asset is cached locally
 after its first download from the development server. Track
 names and languages can be unavailable. iOS sample-buffer subtitle rendering
@@ -298,16 +298,18 @@ Subtitle style preferences are supplied when creating a session:
 ```ts
 const sessionId = await Player.createSessionWithSubtitleStyle({
   fontScale: 1.5,
+  textColor: 0xffff00, // optional RGB
   backgroundColor: 0x000000,
   backgroundOpacity: 160,
   outlineColor: 0x000000,
   outlineWidth: 4,
   bottomMargin: 30,
+  alignment: 1, // -1 auto, 0 center, 1 left, 2 right
 });
 ```
 
-The example exposes the same settings after releasing the current session.
-Colors are 24-bit RGB integers; opacity is 0–255, outline width 0–5, bottom
+The example applies the chosen settings when **Start subtitle test** replaces the current session and starts the test video.
+Alignment uses -1 for automatic, 0 for center, 1 for left, and 2 for right. It applies to text subtitles handled by VLC’s text subtitle decoder; other formats may ignore it. Colors are 24-bit RGB integers; opacity is 0–255, outline width 0–5, bottom
 margin 0–500 output pixels, and font scale 0.5–3. VLC 3 on Android approximates
 font scaling with a relative-size option. iOS VLC 4 also exposes
 `setSubtitleFontScale(sessionId, scale)` for changing size during playback;
@@ -316,8 +318,7 @@ using it. Other style settings require a new session on both platforms. Each
 styled session creates its own VLC instance, which can increase memory usage.
 Embedded subtitle styling and bitmap subtitles may override or ignore these
 preferences; actual output and PiP remain subject to device verification.
-Text color follows VLC and the subtitle's embedded style; it cannot be set
-through this API.
+Text color is an optional preference; embedded subtitle styles may override it.
 
 On iOS, prepare the local playlist and use **Start iOS frame probe** to test
 an independent muted LibVLC decoder; it pauses the normal player and displays

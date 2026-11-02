@@ -719,17 +719,22 @@ class ExpoSummonVlcModule : Module() {
   private fun subtitleStyleOptions(style: Map<String, Double>): List<String> {
     val limits = mapOf("fontScale" to (0.5..3.0), "backgroundColor" to (0.0..16777215.0),
       "backgroundOpacity" to (0.0..255.0), "outlineColor" to (0.0..16777215.0), "outlineWidth" to (0.0..5.0), "bottomMargin" to (0.0..500.0))
-    require(style.keys == limits.keys && limits.all { (key, range) ->
+    require(style.keys - setOf("alignment", "textColor") == limits.keys &&
+      style["textColor"].let { it == null || (it.isFinite() && it in 0.0..16777215.0 && it % 1.0 == 0.0) } &&
+      style["alignment"].let { it == null || it in listOf(-1.0, 0.0, 1.0, 2.0) } && limits.all { (key, range) ->
       val value = style[key]
       value != null && value.isFinite() && value in range && (key == "fontScale" || value % 1.0 == 0.0)
     }) { "Invalid subtitle style" }
-    return listOf("--freetype-rel-fontsize=${(16.0 / style.getValue("fontScale")).toInt().coerceAtLeast(1)}",
+    val options = mutableListOf("--freetype-rel-fontsize=${(16.0 / style.getValue("fontScale")).toInt().coerceAtLeast(1)}",
       "--freetype-background-color=${style.getValue("backgroundColor").toInt()}",
       "--freetype-background-opacity=${style.getValue("backgroundOpacity").toInt()}",
       "--freetype-outline-color=${style.getValue("outlineColor").toInt()}",
       "--freetype-outline-opacity=255",
       "--freetype-outline-thickness=${style.getValue("outlineWidth").toInt()}",
       "--sub-margin=${style.getValue("bottomMargin").toInt()}")
+    style["textColor"]?.let { options.add("--freetype-color=${it.toInt()}") }
+    style["alignment"]?.let { options.add("--subsdec-align=${it.toInt()}") }
+    return options
   }
   private fun createPlayerSession(options: List<String>?): String {
     val context = appContext.reactContext ?: throw IllegalStateException("React context is unavailable")
