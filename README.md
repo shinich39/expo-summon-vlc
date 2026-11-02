@@ -15,17 +15,21 @@ The example currently uses Expo SDK 57. Compatibility with other SDK versions ha
 
 ## Installation
 
-When working from a source checkout, first install its dependencies and create the compiled `build/` output used by the package entry points:
+Install the package in your Expo app directly from GitHub:
+
+```sh
+npm install github:shinich39/expo-summon-vlc
+```
+
+To install a specific release or commit, append its tag or commit hash, for example `github:shinich39/expo-summon-vlc#<tag-or-commit>`. GitHub installations run the package's `prepare` script to build its TypeScript output.
+
+For local package development, install the checkout's dependencies and build it before installing it in your app:
 
 ```sh
 cd /path/to/expo-summon-vlc
 npm install
 npm run build
-```
 
-Then install the package in your Expo app from the checkout or another source available to your project. For example:
-
-```sh
 cd /path/to/your-app
 npm install /absolute/path/to/expo-summon-vlc
 ```
