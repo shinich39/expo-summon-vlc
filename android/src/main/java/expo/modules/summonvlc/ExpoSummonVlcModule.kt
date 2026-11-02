@@ -9,6 +9,11 @@ import android.app.Activity
 import android.app.PendingIntent
 import android.app.PictureInPictureParams
 import android.app.RemoteAction
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.os.IBinder
 import android.content.pm.PackageManager
 import android.graphics.Rect
 import android.graphics.Color
@@ -16,6 +21,9 @@ import android.graphics.drawable.Icon
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.media.MediaMetadata
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
@@ -124,6 +132,7 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
   var eventSequence = 0L
   var progressSequence = 0L
   var onProgress: (() -> Unit)? = null
+  var onEvent: ((String, Map<String, Any?>) -> Unit)? = null
   private val progressHandler = android.os.Handler(android.os.Looper.getMainLooper())
   private var lastProgressKey = ""
   private val progressRunnable = object : Runnable {
@@ -451,6 +460,193 @@ private object Sessions {
     ?: throw IllegalStateException("Session does not exist or has been released")
 }
 
+// Android's system media controls are shared; only one session can publish them.
+private object SystemMediaControls {
+  private var owner: PlayerSession? = null
+  private var mediaSession: MediaSession? = null
+  private var appContext: Context? = null
+  private var receiver: BroadcastReceiver? = null
+  private const val notificationId = 42017
+  private const val channelId = "expo_summon_vlc_playback"
+  private var lastProgressUpdate = 0L
+  private var backgroundOwner: PlayerSession? = null
+  private var notification: Notification? = null
+
+  fun backgroundSessionId(): String? = Sessions.items.entries.firstOrNull { it.value === backgroundOwner }?.key
+  fun ownsBackground(candidate: PlayerSession): Boolean = backgroundOwner === candidate
+
+  fun setBackgroundEnabled(context: Context, candidate: PlayerSession, enabled: Boolean) {
+    if (!enabled) {
+      if (backgroundOwner === candidate) stopBackground()
+      return
+    }
+    check(owner === candidate) { "Enable system media controls before background playback" }
+    if (backgroundOwner === candidate) return
+    check(candidate.player.hasMedia()) { "Load media before enabling background playback" }
+    refresh(candidate)
+    check(notification != null) { "Media notification is unavailable" }
+    backgroundOwner = candidate
+    try {
+      val intent = Intent(context, PlaybackService::class.java)
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
+    } catch (error: Exception) {
+      backgroundOwner = null
+      throw error
+    }
+  }
+
+  fun foregroundNotification(): Notification? = if (backgroundOwner != null) notification else null
+  fun stopBackground() {
+    if (backgroundOwner == null) return
+    backgroundOwner = null
+    appContext?.let { it.stopService(Intent(it, PlaybackService::class.java)) }
+  }
+
+  fun serviceDestroyed() {
+    val candidate = backgroundOwner ?: return
+    backgroundOwner = null
+    if (candidate.onEvent == null) {
+      val id = Sessions.items.entries.firstOrNull { it.value === candidate }?.key
+      clear(candidate)
+      candidate.release()
+      if (id != null) Sessions.items.remove(id)
+    }
+  }
+
+  fun setEnabled(context: Context, candidate: PlayerSession, enabled: Boolean) {
+    if (!enabled) { clear(candidate); return }
+    check(owner == null || owner === candidate) { "Another session already controls system media playback" }
+    if (owner === candidate) { refresh(candidate); return }
+    val app = context.applicationContext
+    val session = MediaSession(app, "ExpoSummonVlc")
+    @Suppress("DEPRECATION")
+    session.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS or MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS)
+    owner = candidate
+    appContext = app
+    mediaSession = session
+    session.setCallback(object : MediaSession.Callback() {
+      override fun onPlay() { runCatching { candidate.playPlayback() }; refresh(candidate) }
+      override fun onPause() { candidate.pausePlayback(); refresh(candidate) }
+      override fun onSkipToNext() { runCatching { candidate.next() }; refresh(candidate) }
+      override fun onSkipToPrevious() { runCatching { candidate.previous() }; refresh(candidate) }
+      override fun onSeekTo(pos: Long) {
+        val duration = maxOf(candidate.player.length, candidate.lastDuration)
+        if (duration > 0 && candidate.player.isSeekable) candidate.player.setTime(pos.coerceIn(0, duration - 1))
+        refresh(candidate)
+      }
+    })
+    val action = "${app.packageName}.expo.summonvlc.MEDIA_CONTROL"
+    val broadcast = object : BroadcastReceiver() {
+      override fun onReceive(context: Context, intent: Intent) {
+        if (owner !== candidate || intent.action != action) return
+        when (intent.getStringExtra("command")) {
+          "play" -> runCatching { candidate.playPlayback() }
+          "pause" -> candidate.pausePlayback()
+          "previous" -> runCatching { candidate.previous() }
+          "next" -> runCatching { candidate.next() }
+        }
+        refresh(candidate)
+      }
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) app.registerReceiver(broadcast, IntentFilter(action), Context.RECEIVER_NOT_EXPORTED)
+    else @Suppress("DEPRECATION") app.registerReceiver(broadcast, IntentFilter(action))
+    receiver = broadcast
+    session.isActive = true
+    refresh(candidate)
+  }
+
+  fun refresh(candidate: PlayerSession, progressOnly: Boolean = false) {
+    if (owner !== candidate) return
+    val session = mediaSession ?: return
+    val context = appContext ?: return
+    val now = SystemClock.elapsedRealtime()
+    if (progressOnly && now - lastProgressUpdate < 1000) return
+    lastProgressUpdate = now
+    val player = candidate.player
+    val playing = candidate.state() == "playing"
+    val state = when (candidate.state()) {
+      "playing" -> PlaybackState.STATE_PLAYING
+      "paused" -> PlaybackState.STATE_PAUSED
+      "preparing", "buffering" -> PlaybackState.STATE_BUFFERING
+      "error" -> PlaybackState.STATE_ERROR
+      "stopped", "ended" -> PlaybackState.STATE_STOPPED
+      else -> PlaybackState.STATE_NONE
+    }
+    var actions = PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE
+    if (candidate.canPrevious()) actions = actions or PlaybackState.ACTION_SKIP_TO_PREVIOUS
+    if (candidate.canNext()) actions = actions or PlaybackState.ACTION_SKIP_TO_NEXT
+    if (player.isSeekable) actions = actions or PlaybackState.ACTION_SEEK_TO
+    session.setPlaybackState(PlaybackState.Builder().setActions(actions)
+      .setState(state, player.time.coerceAtLeast(0), if (playing) candidate.playbackRate.toFloat() else 0f).build())
+    if (progressOnly) return
+    val item = candidate.playlistItems.getOrNull(candidate.currentIndex)
+    val title = item?.title?.takeIf { it.isNotBlank() } ?: item?.uri?.lastPathSegment ?: "Media"
+    val duration = maxOf(candidate.lastDuration, player.length).coerceAtLeast(0)
+    session.setMetadata(MediaMetadata.Builder().putString(MediaMetadata.METADATA_KEY_TITLE, title)
+      .putLong(MediaMetadata.METADATA_KEY_DURATION, duration).build())
+    val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    if (!player.hasMedia()) { notification = null; if (backgroundOwner == null) manager.cancel(notificationId); return }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) manager.createNotificationChannel(
+      NotificationChannel(channelId, "Media playback", NotificationManager.IMPORTANCE_LOW))
+    fun action(command: String, label: String, icon: Int): Notification.Action {
+      val intent = Intent("${context.packageName}.expo.summonvlc.MEDIA_CONTROL").setPackage(context.packageName)
+        .setData(Uri.parse("summonvlc://media-control/$command")).putExtra("command", command)
+      val pending = PendingIntent.getBroadcast(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+      return Notification.Action.Builder(Icon.createWithResource(context, icon), label, pending).build()
+    }
+    val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(context, channelId) else Notification.Builder(context)
+    builder.setSmallIcon(android.R.drawable.ic_media_play).setContentTitle(title).setOnlyAlertOnce(true)
+      .setVisibility(Notification.VISIBILITY_PUBLIC)
+    if (candidate.canPrevious()) builder.addAction(action("previous", "Previous", android.R.drawable.ic_media_previous))
+    builder.addAction(action(if (playing) "pause" else "play", if (playing) "Pause" else "Play",
+      if (playing) R.drawable.expo_summon_vlc_pause else R.drawable.expo_summon_vlc_play_arrow))
+    if (candidate.canNext()) builder.addAction(action("next", "Next", android.R.drawable.ic_media_next))
+    val actionCount = 1 + (if (candidate.canPrevious()) 1 else 0) + (if (candidate.canNext()) 1 else 0)
+    builder.setStyle(Notification.MediaStyle().setMediaSession(session.sessionToken)
+      .setShowActionsInCompactView(*(0 until actionCount).toList().toIntArray()))
+    context.packageManager.getLaunchIntentForPackage(context.packageName)?.let { intent ->
+      builder.setContentIntent(PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+    }
+    val built = builder.build()
+    notification = built
+    manager.notify(notificationId, built)
+  }
+
+  fun clear(candidate: PlayerSession? = null) {
+    if (candidate != null && owner !== candidate) return
+    stopBackground()
+    val context = appContext
+    receiver?.let { context?.unregisterReceiver(it) }
+    receiver = null
+    mediaSession?.isActive = false
+    mediaSession?.release()
+    mediaSession = null
+    (context?.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)?.cancel(notificationId)
+    owner = null
+    appContext = null
+    notification = null
+  }
+}
+
+class PlaybackService : Service() {
+  override fun onBind(intent: Intent?): IBinder? = null
+
+  override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    val notification = SystemMediaControls.foregroundNotification()
+    if (notification == null) {
+      stopSelf(startId)
+      return START_NOT_STICKY
+    }
+    startForeground(42017, notification)
+    return START_NOT_STICKY
+  }
+
+  override fun onDestroy() {
+    SystemMediaControls.serviceDestroyed()
+    super.onDestroy()
+  }
+}
+
 private fun pictureInPictureProvider(activity: Activity): Class<*>? = runCatching {
   val provider = Class.forName("androidx.core.app.OnPictureInPictureModeChangedProvider")
   val info = Class.forName("androidx.core.app.PictureInPictureModeChangedInfo")
@@ -713,6 +909,30 @@ class PlayerView(context: Context, appContext: AppContext) : ExpoView(context, a
   }
 }
 
+private fun publishPlaybackState(id: String, session: PlayerSession) {
+    if (Sessions.items[id] !== session) return
+    SystemMediaControls.refresh(session)
+    val state = session.state()
+    val key = "${session.currentIndex}:${session.currentItemId() ?: ""}:$state"
+    if (key == session.lastReportedState) return
+    session.lastReportedState = key
+    session.eventSequence++
+    val identity = mapOf("sessionId" to id, "currentIndex" to session.currentIndex,
+      "currentItemId" to session.currentItemId(), "sequence" to session.eventSequence)
+    session.onEvent?.invoke("onPlaybackStateChange", identity + ("state" to state))
+    session.playbackError()?.let { failure -> session.onEvent?.invoke("onPlaybackError", identity + failure) }
+  }
+
+private fun finishBackgroundPlayback(id: String, session: PlayerSession): Boolean {
+  if (!SystemMediaControls.ownsBackground(session)) return false
+  SystemMediaControls.stopBackground()
+  if (session.onEvent != null) return false
+  SystemMediaControls.clear(session)
+  session.release()
+  Sessions.items.remove(id)
+  return true
+}
+
 class ExpoSummonVlcModule : Module() {
   private fun requestPictureInPictureStop(id: String, activity: Activity) {
     Sessions.get(id)
@@ -721,18 +941,6 @@ class ExpoSummonVlcModule : Module() {
       check(Sessions.pictureInPictureSessionId == id) { "Another session is using Picture-in-picture" }
       activity.startActivity(Intent(activity, activity.javaClass).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP))
     }
-  }
-  private fun publishPlaybackState(id: String, session: PlayerSession) {
-    if (Sessions.items[id] !== session) return
-    val state = session.state()
-    val key = "${session.currentIndex}:${session.currentItemId() ?: ""}:$state"
-    if (key == session.lastReportedState) return
-    session.lastReportedState = key
-    session.eventSequence++
-    val identity = mapOf("sessionId" to id, "currentIndex" to session.currentIndex,
-      "currentItemId" to session.currentItemId(), "sequence" to session.eventSequence)
-    sendEvent("onPlaybackStateChange", identity + ("state" to state))
-    session.playbackError()?.let { failure -> sendEvent("onPlaybackError", identity + failure) }
   }
   private fun playlistItems(values: List<Map<String, String>>): List<PlaylistItem> {
     val items = values.map { PlaylistItem.parse(it) }
@@ -759,14 +967,20 @@ class ExpoSummonVlcModule : Module() {
     style["alignment"]?.let { options.add("--subsdec-align=${it.toInt()}") }
     return options
   }
+  private fun attachEventSink(session: PlayerSession) {
+    val module = WeakReference(this)
+    session.onEvent = { name, payload -> module.get()?.sendEvent(name, payload) }
+  }
   private fun createPlayerSession(options: List<String>?): String {
     val context = appContext.reactContext ?: throw IllegalStateException("React context is unavailable")
     val id = UUID.randomUUID().toString()
     val session = PlayerSession(context, options)
     Sessions.items[id] = session
+    attachEventSink(session)
     session.onProgress = {
       if (Sessions.items[id] === session) {
-        sendEvent("onPlaybackProgress", mapOf("sessionId" to id, "currentIndex" to session.currentIndex,
+        SystemMediaControls.refresh(session, progressOnly = true)
+        session.onEvent?.invoke("onPlaybackProgress", mapOf("sessionId" to id, "currentIndex" to session.currentIndex,
           "currentItemId" to session.currentItemId(), "mediaRevision" to session.generation.toString(),
           "sequence" to session.progressSequence, "positionMillis" to session.player.time.coerceAtLeast(0),
           "durationMillis" to maxOf(session.lastDuration, session.player.length).coerceAtLeast(0)))
@@ -784,10 +998,11 @@ class ExpoSummonVlcModule : Module() {
         android.os.Handler(android.os.Looper.getMainLooper()).post {
           if (Sessions.items[id] === session && session.generation == generation) {
             session.applyPendingSeek()
+            if (eventType == MediaPlayer.Event.LengthChanged || eventType == MediaPlayer.Event.SeekableChanged) SystemMediaControls.refresh(session)
             if (eventType == MediaPlayer.Event.TimeChanged && !session.transitionPending && session.player.isPlaying && session.player.time >= 1000) session.resetFailures()
             if (session.updateVideoAspectRatio()) session.pipControls?.refresh()
             if (eventType == MediaPlayer.Event.ESAdded || eventType == MediaPlayer.Event.ESDeleted || eventType == MediaPlayer.Event.ESSelected) {
-              sendEvent("onTracksChanged", mapOf("sessionId" to id, "revision" to generation.toString()))
+              session.onEvent?.invoke("onTracksChanged", mapOf("sessionId" to id, "revision" to generation.toString()))
             }
           }
         }
@@ -813,9 +1028,16 @@ class ExpoSummonVlcModule : Module() {
               session.autoAdvanceArmed = session.currentIndex in session.playlist.indices
             } else if (eventType == MediaPlayer.Event.EncounteredError && state == "error") {
               runCatching { session.handlePlaybackFailure() }
+              if (!session.transitionPending && finishBackgroundPlayback(id, session)) return@post
             } else if (eventType == MediaPlayer.Event.EndReached && state == "ended" && session.autoAdvanceArmed) {
               session.autoAdvanceArmed = false
-              if (session.pendingSeek == null && !session.next(automatic = true)) session.clearAudioFocus()
+              if (session.pendingSeek == null && !session.next(automatic = true)) {
+                session.clearAudioFocus()
+                if (finishBackgroundPlayback(id, session)) return@post
+              }
+            } else if (eventType == MediaPlayer.Event.EndReached && state == "ended" && session.pendingSeek == null) {
+              session.clearAudioFocus()
+              if (finishBackgroundPlayback(id, session)) return@post
             }
             session.pipControls?.refresh()
           }
@@ -888,8 +1110,16 @@ class ExpoSummonVlcModule : Module() {
     AsyncFunction("cancelMediaJob") { id: String -> MediaAnalysis.cancel(id) }.runOnQueue(Queues.MAIN)
 
     AsyncFunction("setControlCenterEnabled") { id: String, enabled: Boolean ->
-      Sessions.get(id)
-      if (enabled) throw UnsupportedOperationException("Control Center integration is available on iOS only")
+      val context = appContext.reactContext ?: throw IllegalStateException("React context is unavailable")
+      SystemMediaControls.setEnabled(context, Sessions.get(id), enabled)
+    }.runOnQueue(Queues.MAIN)
+
+    AsyncFunction("setBackgroundPlaybackEnabled") { id: String, enabled: Boolean ->
+      val context = appContext.reactContext ?: throw IllegalStateException("React context is unavailable")
+      SystemMediaControls.setBackgroundEnabled(context, Sessions.get(id), enabled)
+    }.runOnQueue(Queues.MAIN)
+    AsyncFunction("getBackgroundSessionId") {
+      SystemMediaControls.backgroundSessionId()?.also { attachEventSink(Sessions.get(it)) }
     }.runOnQueue(Queues.MAIN)
 
     AsyncFunction("getTracks") { id: String ->
@@ -1040,11 +1270,13 @@ class ExpoSummonVlcModule : Module() {
       val session = Sessions.get(id)
       session.repeatMode = mode
       session.pipControls?.refresh()
+      SystemMediaControls.refresh(session)
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("setShuffleEnabled") { id: String, enabled: Boolean ->
       val session = Sessions.get(id)
       session.setShuffle(enabled)
       session.pipControls?.refresh()
+      SystemMediaControls.refresh(session)
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("setTransitionTimeout") { id: String, _: Double ->
       Sessions.get(id)
@@ -1061,6 +1293,7 @@ class ExpoSummonVlcModule : Module() {
       val session = Sessions.get(id)
       session.player.setRate(rate.toFloat())
       session.playbackRate = rate
+      SystemMediaControls.refresh(session)
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("setVolume") { id: String, volume: Double ->
       require(volume.isFinite() && volume in 0.0..1.0) { "Volume must be between 0 and 1" }
@@ -1176,6 +1409,7 @@ class ExpoSummonVlcModule : Module() {
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("stop") { id: String ->
       val session = Sessions.get(id)
+      if (SystemMediaControls.ownsBackground(session)) SystemMediaControls.stopBackground()
       session.playbackFailed = false
       session.transitionPending = false
       session.resetFailures()
@@ -1187,6 +1421,7 @@ class ExpoSummonVlcModule : Module() {
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("release") { id: String ->
       val session = Sessions.get(id)
+      SystemMediaControls.clear(session)
       session.release()
       Sessions.items.remove(id)
       if (Sessions.pictureInPictureSessionId == id) Sessions.pictureInPictureSessionId = null
@@ -1202,8 +1437,19 @@ class ExpoSummonVlcModule : Module() {
     OnDestroy {
       android.os.Handler(android.os.Looper.getMainLooper()).post {
         MediaAnalysis.shutdown()
-        Sessions.items.values.toList().forEach { it.release() }
-        Sessions.items.clear()
+        val retainedId = SystemMediaControls.backgroundSessionId()
+        Sessions.items.toMap().forEach { (id, session) ->
+          if (id == retainedId) {
+            session.onEvent = null
+            session.output?.detach()
+            session.pipControls?.close()
+            session.pipControls = null
+          } else {
+            SystemMediaControls.clear(session)
+            session.release()
+            Sessions.items.remove(id)
+          }
+        }
         Sessions.pictureInPictureSessionId = null
       }
     }

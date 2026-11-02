@@ -737,10 +737,9 @@ private final class ControlCenter {
     let position = candidate.isTransitioning ? 0 : max(0, candidate.player.positionMillis)
     let duration = candidate.isTransitioning ? 0 : max(candidate.lastDuration, candidate.player.durationMillis)
     var info: [String: Any] = [
-      MPMediaItemPropertyTitle: (title?.isEmpty == false ? title : nil) ?? (fallback?.isEmpty == false ? fallback : nil) ?? "Video",
+      MPMediaItemPropertyTitle: (title?.isEmpty == false ? title : nil) ?? (fallback?.isEmpty == false ? fallback : nil) ?? "Media",
       MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(position) / 1000,
       MPNowPlayingInfoPropertyPlaybackRate: candidate.state == "playing" ? candidate.playbackRate : 0.0,
-      MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.video.rawValue,
     ]
     if duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = Double(duration) / 1000 }
     if let artist = media?.metaData.artist, !artist.isEmpty { info[MPMediaItemPropertyArtist] = artist }
@@ -1651,6 +1650,12 @@ public class ExpoSummonVlcModule: Module {
     AsyncFunction("setControlCenterEnabled") { (id: String, enabled: Bool) in
       try ControlCenter.shared.setEnabled(enabled, session: Sessions.get(id))
     }.runOnQueue(.main)
+
+    AsyncFunction("setBackgroundPlaybackEnabled") { (id: String, enabled: Bool) in
+      _ = try Sessions.get(id)
+      if enabled { throw NSError(domain: "ExpoSummonVlc", code: 24, userInfo: [NSLocalizedDescriptionKey: "Android background playback service is not available on iOS"]) }
+    }.runOnQueue(.main)
+    AsyncFunction("getBackgroundSessionId") { () -> String? in nil }.runOnQueue(.main)
 
     AsyncFunction("setPlaybackRate") { (id: String, rate: Double) in
       guard rate.isFinite, (0.25...4).contains(rate) else { throw NSError(domain: "ExpoSummonVlc", code: 18, userInfo: [NSLocalizedDescriptionKey: "Playback rate must be between 0.25 and 4"]) }

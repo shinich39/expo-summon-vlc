@@ -1,3 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+  <application>
+    <service android:name="expo.modules.summonvlc.PlaybackService" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="mediaPlayback" />
+  </application>
 </manifest>

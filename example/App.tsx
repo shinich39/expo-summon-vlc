@@ -75,6 +75,8 @@ export default function App() {
   const [resizeMode, setResizeMode] = useState<VideoResizeMode>('contain');
   const [disableResizeAnimation, setDisableResizeAnimation] = useState(false);
   const [squareVideo, setSquareVideo] = useState(false);
+  const [audioOnly, setAudioOnly] = useState(false);
+  const [audioUri, setAudioUri] = useState('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3');
   const [playlistSize, setPlaylistSize] = useState(0);
   const [playlistItems, setPlaylistItems] = useState<PlaylistItem[]>([]);
   const [playlistEditing, setPlaylistEditing] = useState(false);
@@ -95,6 +97,8 @@ export default function App() {
   const [pipMode, setPipMode] = useState(false);
   const [controlCenterEnabled, setControlCenterEnabled] = useState(false);
   const [controlCenterBusy, setControlCenterBusy] = useState(false);
+  const [backgroundEnabled, setBackgroundEnabled] = useState(false);
+  const backgroundEnabledRef = useRef(false);
   const [probeUri, setProbeUri] = useState<string | null>(null);
   const [probeActive, setProbeActive] = useState(false);
   const [probeFrames, setProbeFrames] = useState(0);
@@ -175,13 +179,25 @@ export default function App() {
     mounted.current = true;
     sessionOperation.current = true;
     setSessionBusy(true);
-    Player.createSession().then((created) => {
-      if (disposed) void Player.release(created).catch(() => {});
+    (async () => {
+      const retained = Platform.OS === 'android' ? await Player.getBackgroundSessionId() : null;
+      return { id: retained ?? await Player.createSession(), retained: !!retained };
+    })().then(({ id: created, retained }) => {
+      if (disposed) { if (!retained) void Player.release(created).catch(() => {}); }
       else {
         sessionRef.current = created;
         setSessionId(created);
-        setSessionCounts((counts) => ({ ...counts, created: counts.created + 1 }));
-        setMessage('Load the local playlist before switching.');
+        if (retained) {
+          backgroundEnabledRef.current = true;
+          setBackgroundEnabled(true);
+          setControlCenterEnabled(true);
+          setReady(true);
+          void Player.getPlaylist(created).then((items) => { if (!disposed) { setPlaylistItems(items); setPlaylistSize(items.length); } });
+          setMessage('Reconnected to background playback.');
+        } else {
+          setSessionCounts((counts) => ({ ...counts, created: counts.created + 1 }));
+          setMessage('Load the local playlist before switching.');
+        }
       }
     }).catch((error: unknown) => { if (!disposed) setMessage(`Create session: ${String(error)}`); })
       .finally(() => { if (!disposed) { sessionOperation.current = false; setSessionBusy(false); } });
@@ -190,7 +206,7 @@ export default function App() {
       mounted.current = false;
       const id = sessionRef.current;
       sessionRef.current = null;
-      if (id && !sessionOperation.current) void Player.release(id).catch(() => {});
+      if (id && !sessionOperation.current && !backgroundEnabledRef.current) void Player.release(id).catch(() => {});
     };
   }, []);
 
@@ -216,6 +232,8 @@ export default function App() {
   }
 
   function clearSessionDisplay() {
+    backgroundEnabledRef.current = false;
+    setBackgroundEnabled(false);
     setSessionId(null);
     setControlCenterEnabled(false);
     setReady(false);
@@ -396,6 +414,7 @@ export default function App() {
 
   async function prepare() {
     if (!sessionId || busy || sessionBusy || analysisBusy) return;
+    setAudioOnly(false);
     pendingSeek.current = null;
     setPreview(null);
     setBusy(true);
@@ -407,6 +426,8 @@ export default function App() {
       }
       stage = 'Stopping playback';
       await Player.stop(sessionId);
+      backgroundEnabledRef.current = false;
+      setBackgroundEnabled(false);
       stage = 'Preparing files';
       const files = await prepareFiles([firstUri.trim(), secondUri.trim()], (progress) => {
         stage = progress;
@@ -425,6 +446,31 @@ export default function App() {
       record('Local playlist ready; requested item 1');
     } catch (error) { setMessage(`${stage}: ${String(error)}`); }
     finally { setBusy(false); }
+  }
+
+  async function startAudioTest() {
+    if (!sessionId || busy || sessionBusy || pipMode) return;
+    setBusy(true);
+    setReady(false);
+    setAudioOnly(true);
+    setMessage('Starting audio without a video view…');
+    pendingSeek.current = null;
+    setPreview(null);
+    try {
+      await Player.stop(sessionId);
+      backgroundEnabledRef.current = false;
+      setBackgroundEnabled(false);
+      await Player.setPlaylistItems(sessionId, [{ id: 'audio-test', uri: audioUri.trim(), title: 'Audio test' }]);
+      setPlaylistItems(await Player.getPlaylist(sessionId));
+      setPlaylistSize(1);
+      await Player.selectPlaylistItem(sessionId, 0);
+      setReady(true);
+      setMessage('Audio test started without PlayerView. Use the playback controls below.');
+    } catch (error) {
+      setMessage(`Audio test: ${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function testPlaybackError() {
@@ -648,6 +694,7 @@ export default function App() {
 
   async function startSubtitleTest() {
     if (sessionOperation.current || busy || probeActive || analysisBusy || (Platform.OS === 'android' && pipMode)) return;
+    setAudioOnly(false);
     sessionOperation.current = true;
     setSessionBusy(true);
     setBusy(true);
@@ -780,6 +827,7 @@ export default function App() {
     try {
       const enabled = !controlCenterEnabled;
       await Player.setControlCenterEnabled(sessionId, enabled);
+      if (!enabled) { backgroundEnabledRef.current = false; setBackgroundEnabled(false); }
       setControlCenterEnabled(enabled);
       setMessage(`Control Center ${enabled ? 'enabled' : 'disabled'}.`);
     } catch (error) {
@@ -787,6 +835,19 @@ export default function App() {
     } finally {
       setControlCenterBusy(false);
     }
+  }
+
+  async function toggleBackgroundPlayback() {
+    if (!sessionId || controlCenterBusy) return;
+    setControlCenterBusy(true);
+    try {
+      const enabled = !backgroundEnabledRef.current;
+      await Player.setBackgroundPlaybackEnabled(sessionId, enabled);
+      backgroundEnabledRef.current = enabled;
+      setBackgroundEnabled(enabled);
+      setMessage(`Background playback ${enabled ? 'enabled' : 'disabled'}.`);
+    } catch (error) { setMessage(`Background playback: ${String(error)}`); }
+    finally { setControlCenterBusy(false); }
   }
 
   async function changeRepeat() {
@@ -884,11 +945,17 @@ export default function App() {
   return (
     <SafeAreaView style={[styles.root, Platform.OS === 'android' && pipMode && styles.pipRoot]}>
       <View style={Platform.OS === 'android' && pipMode ? styles.pipVideoContainer : styles.videoContainer}>
-        {sessionId ? <PlayerView sessionId={sessionId} resizeMode={resizeMode} disableResizeAnimation={disableResizeAnimation} style={Platform.OS === 'android' && pipMode ? styles.pipVideo : [styles.video, squareVideo && styles.squareVideo]} /> : <View style={Platform.OS === 'android' && pipMode ? styles.pipVideo : [styles.video, squareVideo && styles.squareVideo]} />}
+        {sessionId && !audioOnly ? <PlayerView sessionId={sessionId} resizeMode={resizeMode} disableResizeAnimation={disableResizeAnimation} style={Platform.OS === 'android' && pipMode ? styles.pipVideo : [styles.video, squareVideo && styles.squareVideo]} /> : !audioOnly && <View style={Platform.OS === 'android' && pipMode ? styles.pipVideo : [styles.video, squareVideo && styles.squareVideo]} />}
       </View>
       <ScrollView style={Platform.OS === 'android' && pipMode ? styles.hidden : undefined} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" removeClippedSubviews={false}>
         <Text style={styles.title}>Local playlist transition</Text>
         <View style={Platform.OS === 'android' && pipMode ? styles.hidden : styles.controlGroup}>
+        <Text style={styles.heading}>Audio without PlayerView</Text>
+        <TextInput style={styles.input} value={audioUri} onChangeText={setAudioUri} autoCapitalize="none" autoCorrect={false} />
+        <Button title="Start audio test" disabled={!sessionId || sessionBusy || busy || pipMode} onPress={() => void startAudioTest()} />
+        <Text>{audioOnly ? 'Audio mode: PlayerView is not mounted.' : 'Video view is active.'}</Text>
+        <Button title={`System media controls: ${controlCenterEnabled ? 'On' : 'Off'}`} disabled={!sessionId || sessionBusy || controlCenterBusy} onPress={() => void toggleControlCenter()} />
+        {Platform.OS === 'android' && <Button title={`Background playback: ${backgroundEnabled ? 'On' : 'Off'}`} disabled={!sessionId || !ready || !controlCenterEnabled || sessionBusy || controlCenterBusy} onPress={() => void toggleBackgroundPlayback()} />}
         {Platform.OS === 'ios' && <View>
           <Text>Resize animation test</Text>
           <View style={styles.controls}>
@@ -956,7 +1023,7 @@ export default function App() {
           <Button title="Play" disabled={!sessionId || !ready || sessionBusy} onPress={() => { if (sessionId) void Player.play(sessionId).catch((error: unknown) => setMessage(String(error))); }} />
           <Button title="Pause" disabled={!sessionId || !ready || sessionBusy} onPress={() => { if (sessionId) void Player.pause(sessionId).catch((error: unknown) => setMessage(String(error))); }} />
           <Button title="Next" disabled={!ready || sessionBusy || !playback?.canNext} onPress={() => void move('next')} />
-          <Button title="PiP" disabled={!ready || !pipSupported || sessionBusy} onPress={() => void startPip()} />
+          <Button title="PiP" disabled={audioOnly || !ready || !pipSupported || sessionBusy} onPress={() => void startPip()} />
           <Button title="Stop PiP" disabled={!pipMode || sessionBusy} onPress={() => void stopPip()} />
         </View>
         {pipReason && <Text>Picture-in-Picture: {pipReason}</Text>}
@@ -1047,7 +1114,6 @@ export default function App() {
           <Button title={`Repeat: ${playback?.repeatMode ?? 'off'}`} disabled={!sessionId || !playback || sessionBusy} onPress={() => void changeRepeat()} />
           <Button title={`Shuffle: ${playback?.shuffleEnabled ? 'on' : 'off'}`} disabled={!sessionId || !playback || sessionBusy} onPress={() => void changeShuffle()} />
         </View>
-        {Platform.OS === 'ios' && <Button title={`Control Center: ${controlCenterEnabled ? 'On' : 'Off'}`} disabled={!sessionId || sessionBusy || controlCenterBusy} onPress={() => void toggleControlCenter()} />}
         <Text style={styles.heading}>Audio and subtitle tracks</Text>
         <Button title="Refresh tracks" disabled={!sessionId || sessionBusy || trackBusy || !ready} onPress={() => void refreshTracks()} />
         {tracks && <View>

@@ -271,7 +271,7 @@ On Android the activity enters PiP and the app is responsible for its PiP layout
 
 Android PiP provides 10-second rewind, play/pause, and 10-second forward actions when supported by the device. The system controls their placement and may limit the number displayed. Seeking is limited to the current item and is disabled when the media is not seekable.
 
-For optional iOS Control Center integration:
+For optional iOS Control Center and Android system media controls:
 
 ```ts
 await Player.setControlCenterEnabled(sessionId, true);
@@ -279,7 +279,24 @@ await Player.setControlCenterEnabled(sessionId, true);
 await Player.setControlCenterEnabled(sessionId, false);
 ```
 
-Control Center integration is off by default and supports one session at a time. It publishes available media metadata and handles remote playback controls. This API is iOS-only; enabling it on Android rejects. Audio interruptions and device route changes are handled independently of this option. Resumption depends on the interruption and system behavior; stopping another music app does not guarantee automatic resume.
+System media controls are off by default and support one session at a time. They publish the current title, duration and playback state and handle playback, playlist navigation and seeking when available. Android displays a media notification; its layout depends on the system. Audio interruptions and device route changes are handled independently of this option. Resumption depends on the interruption and system behavior; stopping another music app does not guarantee automatic resume.
+
+On Android, opt into the media playback foreground service while the app is visible, after enabling system media controls and loading media:
+
+```ts
+await Player.setControlCenterEnabled(sessionId, true);
+await Player.setBackgroundPlaybackEnabled(sessionId, true);
+
+// On a later app launch, reconnect to a still-running session if one exists.
+const existingSessionId = await Player.getBackgroundSessionId();
+
+// Disable the service or release the session when it is no longer needed.
+await Player.setBackgroundPlaybackEnabled(sessionId, false);
+```
+
+The service retains the session across activity and Expo module teardown and displays a media notification. Explicit `stop`, `release`, disabling system media controls, or reaching the end of the playlist stops the service. Re-enable it after a stop. The service is not automatically restarted after process death or a force-stop. Android restricts starting foreground services from the background; enable it while the app is visible. On iOS, configure the `audio` background mode instead; enabling the Android service rejects and `getBackgroundSessionId()` returns `null`.
+
+Audio files can use the same session and playback APIs without mounting a `PlayerView`. The example includes an audio test that removes the video view before playing a configurable audio URL. Background audio on iOS requires the `audio` background mode described above.
 
 ## Inspect media and generate thumbnails
 
@@ -298,6 +315,24 @@ console.log(metadata, thumbnail.uri);
 ```
 
 Request IDs must be unique among pending jobs. Only one inspection or thumbnail job runs at a time; after cancellation or timeout, native cleanup can briefly leave the service busy. Timeouts must be 100–120,000 ms. Metadata accepts local file, HTTP and HTTPS URIs; thumbnails currently require local files. Thumbnails are temporary JPEG files owned by the caller. iOS uses AVFoundation and reports the selected frame time when available; Android uses `MediaMetadataRetriever` and does not report the actual frame time. Their codec support can differ from VLC.
+
+To check for audio and video tracks before playback, inspect the URI and examine its tracks:
+
+```ts
+try {
+  const media = await Player.inspectMedia('track-inspection-1', mediaUri, 15_000);
+  const hasVideo = media.tracks.some((track) => track.type === 'video');
+  const hasAudio = media.tracks.some((track) => track.type === 'audio');
+
+  // Mount PlayerView when hasVideo is true; audio-only playback needs no view.
+  console.log({ hasVideo, hasAudio });
+} catch (error) {
+  // Inspection failed; the media type is unknown, not necessarily audio-only.
+  console.error('Could not inspect media:', error);
+}
+```
+
+Inspection is separate from playback. Network sources can take time or fail to parse, and a successful result with no recognized tracks does not establish that the media is audio-only. Inspect each playlist item as needed; `getTracks()` currently returns audio and subtitle tracks only.
 
 ## Running the example
 
@@ -318,7 +353,7 @@ See the [example guide](example/README.md) for the test controls and the experim
 - iOS: A PiP stop request may leave PiP active when the app is in the background.
 - PiP transitions, restoration, seeking and resource cleanup need broader device testing.
 - Android: Precise seeking and live subtitle font scaling are not supported.
-- Android: PiP state events depend on host activity support; no foreground playback service is provided.
+- Android: PiP state events depend on host activity support.
 - Video rotation is not supported.
 - Thumbnail generation requires a local file and may not support all VLC-playable formats.
 

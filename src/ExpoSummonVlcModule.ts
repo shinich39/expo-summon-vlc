@@ -35,8 +35,12 @@ declare class ExpoSummonVlcModule extends NativeModule<{
   setFailurePolicy(sessionId: string, policy: PlaybackFailurePolicy): Promise<void>;
   /** iOS only. Applies to subsequent playlist transitions; minimum 1000 ms, default 10000 ms. */
   setTransitionTimeout(sessionId: string, timeoutMillis: number): Promise<void>;
-  /** iOS only; disabled by default. Only one session can own the system controls. */
+  /** Disabled by default. Only one session can own the system media controls. */
   setControlCenterEnabled(sessionId: string, enabled: boolean): Promise<void>;
+  /** Android: enable while the app is foregrounded, after loading media and enabling system controls. */
+  setBackgroundPlaybackEnabled(sessionId: string, enabled: boolean): Promise<void>;
+  /** Returns the retained Android session while background playback is enabled. */
+  getBackgroundSessionId(): Promise<string | null>;
   getPlaybackStatus(sessionId: string): Promise<PlaybackStatus>;
   /** Track lists are snapshots. Refresh after a media transition. */
   getTracks(sessionId: string): Promise<PlaybackTracks>;
