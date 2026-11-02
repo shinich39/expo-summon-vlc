@@ -2,3 +2,4 @@
 // and on native platforms to ExpoSummonVlcModule.ts
 export { default } from './ExpoSummonVlcModule';
 export * from './ExpoSummonVlc.types';
+export { PlayerView } from './PlayerView';

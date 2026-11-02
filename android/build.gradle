@@ -16,3 +16,7 @@ android {
     abortOnError false
   }
 }
+
+dependencies {
+  implementation 'org.videolan.android:libvlc-all:3.7.7'
+}
