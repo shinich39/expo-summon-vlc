@@ -474,15 +474,17 @@ private object SystemMediaControls {
 
   fun backgroundSessionId(): String? = Sessions.items.entries.firstOrNull { it.value === backgroundOwner }?.key
   fun ownsBackground(candidate: PlayerSession): Boolean = backgroundOwner === candidate
+  fun ownsControls(candidate: PlayerSession): Boolean = owner === candidate
 
   fun setBackgroundEnabled(context: Context, candidate: PlayerSession, enabled: Boolean) {
     if (!enabled) {
       if (backgroundOwner === candidate) stopBackground()
       return
     }
-    check(owner === candidate) { "Enable system media controls before background playback" }
     if (backgroundOwner === candidate) return
     check(candidate.player.hasMedia()) { "Load media before enabling background playback" }
+    val alreadyEnabled = ownsControls(candidate)
+    setEnabled(context, candidate, true)
     refresh(candidate)
     check(notification != null) { "Media notification is unavailable" }
     backgroundOwner = candidate
@@ -491,6 +493,7 @@ private object SystemMediaControls {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
     } catch (error: Exception) {
       backgroundOwner = null
+      if (!alreadyEnabled) clear(candidate)
       throw error
     }
   }

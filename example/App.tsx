@@ -180,7 +180,7 @@ export default function App() {
     sessionOperation.current = true;
     setSessionBusy(true);
     (async () => {
-      const retained = Platform.OS === 'android' ? await Player.getBackgroundSessionId() : null;
+      const retained = await Player.getBackgroundSessionId();
       return { id: retained ?? await Player.createSession(), retained: !!retained };
     })().then(({ id: created, retained }) => {
       if (disposed) { if (!retained) void Player.release(created).catch(() => {}); }
@@ -845,6 +845,7 @@ export default function App() {
       await Player.setBackgroundPlaybackEnabled(sessionId, enabled);
       backgroundEnabledRef.current = enabled;
       setBackgroundEnabled(enabled);
+      if (enabled) setControlCenterEnabled(true);
       setMessage(`Background playback ${enabled ? 'enabled' : 'disabled'}.`);
     } catch (error) { setMessage(`Background playback: ${String(error)}`); }
     finally { setControlCenterBusy(false); }
@@ -955,7 +956,7 @@ export default function App() {
         <Button title="Start audio test" disabled={!sessionId || sessionBusy || busy || pipMode} onPress={() => void startAudioTest()} />
         <Text>{audioOnly ? 'Audio mode: PlayerView is not mounted.' : 'Video view is active.'}</Text>
         <Button title={`System media controls: ${controlCenterEnabled ? 'On' : 'Off'}`} disabled={!sessionId || sessionBusy || controlCenterBusy} onPress={() => void toggleControlCenter()} />
-        {Platform.OS === 'android' && <Button title={`Background playback: ${backgroundEnabled ? 'On' : 'Off'}`} disabled={!sessionId || !ready || !controlCenterEnabled || sessionBusy || controlCenterBusy} onPress={() => void toggleBackgroundPlayback()} />}
+        <Button title={`Background playback: ${backgroundEnabled ? 'On' : 'Off'}`} disabled={!sessionId || !ready || sessionBusy || controlCenterBusy} onPress={() => void toggleBackgroundPlayback()} />
         {Platform.OS === 'ios' && <View>
           <Text>Resize animation test</Text>
           <View style={styles.controls}>

@@ -37,9 +37,9 @@ declare class ExpoSummonVlcModule extends NativeModule<{
   setTransitionTimeout(sessionId: string, timeoutMillis: number): Promise<void>;
   /** Disabled by default. Only one session can own the system media controls. */
   setControlCenterEnabled(sessionId: string, enabled: boolean): Promise<void>;
-  /** Android: enable while the app is foregrounded, after loading media and enabling system controls. */
+  /** Enable after loading media, while the app is foregrounded; also enables system media controls. */
   setBackgroundPlaybackEnabled(sessionId: string, enabled: boolean): Promise<void>;
-  /** Returns the retained Android session while background playback is enabled. */
+  /** Returns the retained session while background playback is enabled. */
   getBackgroundSessionId(): Promise<string | null>;
   getPlaybackStatus(sessionId: string): Promise<PlaybackStatus>;
   /** Track lists are snapshots. Refresh after a media transition. */

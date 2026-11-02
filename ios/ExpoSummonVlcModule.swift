@@ -41,6 +41,7 @@ private final class PlayerSession: NSObject {
   var onTracksChange: (() -> Void)?
   var onPiPChange: ((Bool, String?) -> Void)?
   var onPiPWillStop: (() -> Void)?
+  var eventsAttached = true
   var pipGeneration = 0
   var pipExitTestGeneration: Int?
   var lastReportedState = ""
@@ -666,6 +667,23 @@ private final class PlayerSession: NSObject {
 private enum Sessions {
   static var items: [String: PlayerSession] = [:]
   static var pendingCleanup = 0
+  static var backgroundSessionID: String?
+
+  static func finishBackground(_ id: String, session: PlayerSession) {
+    guard backgroundSessionID == id else { return }
+    backgroundSessionID = nil
+    guard !session.eventsAttached else { return }
+    session.releaseInProgress = true
+    SessionPiP.shared.releaseAfterPiP(session, completion: {
+      ControlCenter.shared.clear(session)
+      items.removeValue(forKey: id)
+      pendingCleanup += 1
+      session.release { pendingCleanup -= 1 }
+    }, timeout: {
+      session.releaseInProgress = false
+      backgroundSessionID = id
+    })
+  }
 
   static func get(_ id: String) throws -> PlayerSession {
     guard let session = items[id] else {
@@ -1364,7 +1382,7 @@ final class PlayerView: ExpoView {
     session.output = self
     SessionPiP.shared.attach(session, to: self)
   }
-  private func detach() {
+  fileprivate func detach() {
     if let id = sessionId, let session = Sessions.items[id], session.output === self {
       session.output = nil
       SessionPiP.shared.detach(session)
@@ -1400,14 +1418,8 @@ public class ExpoSummonVlcModule: Module {
     if let alignment = style["alignment"] { options.append("--subsdec-align=\(Int(alignment))") }
     return options
   }
-  private func createPlayerSession(options: [String]?) throws -> String {
-    guard Sessions.pendingCleanup == 0 else {
-      throw NSError(domain: "ExpoSummonVlc", code: 16, userInfo: [NSLocalizedDescriptionKey: "A previous VLC player is still being released. Try again after cleanup finishes."])
-    }
-    let id = UUID().uuidString
-    guard let session = PlayerSession(videoOutput: ESVLCSessionOutput(options: options)) else {
-      throw NSError(domain: "ExpoSummonVlc", code: 12, userInfo: [NSLocalizedDescriptionKey: "Could not create the VLC video output"])
-    }
+  private func bindSession(_ session: PlayerSession, id: String) {
+    session.eventsAttached = true
     session.onStateChange = { [weak self, weak session] in
       DispatchQueue.main.async {
         guard let session, Sessions.items[id] === session, !session.releaseInProgress else { return }
@@ -1419,29 +1431,32 @@ public class ExpoSummonVlcModule: Module {
           let identity: [String: Any] = ["sessionId": id, "currentIndex": session.currentIndex, "currentItemId": session.currentItemID as Any? ?? NSNull(), "sequence": session.eventSequence]
           var event = identity
           event["state"] = state
-          self?.sendEvent("onPlaybackStateChange", event)
+          if session.eventsAttached { self?.sendEvent("onPlaybackStateChange", event) }
           if let failure = session.playbackError {
             var errorEvent = identity
             failure.forEach { errorEvent[$0.key] = $0.value }
-            self?.sendEvent("onPlaybackError", errorEvent)
+            if session.eventsAttached { self?.sendEvent("onPlaybackError", errorEvent) }
           }
         }
         session.handlePlaybackState(state)
         if state == "error" { session.handlePlaybackFailure() }
         SessionPiP.shared.playbackChanged(session)
         ControlCenter.shared.refresh(session)
+        if !session.isTransitioning && ((state == "ended" && session.repeatMode == "off" && !session.canNext) || state == "error") {
+          Sessions.finishBackground(id, session: session)
+        }
       }
     }
     session.onTracksChange = { [weak self, weak session] in
       guard let session, Sessions.items[id] === session, !session.releaseInProgress else { return }
-      self?.sendEvent("onTracksChanged", ["sessionId": id, "revision": session.trackRevision])
+      if session.eventsAttached { self?.sendEvent("onTracksChanged", ["sessionId": id, "revision": session.trackRevision]) }
     }
     session.onProgress = { [weak self, weak session] in
       guard let session, Sessions.items[id] === session, !session.releaseInProgress else { return }
-      self?.sendEvent("onPlaybackProgress", ["sessionId": id, "currentIndex": session.currentIndex,
+      if session.eventsAttached { self?.sendEvent("onPlaybackProgress", ["sessionId": id, "currentIndex": session.currentIndex,
         "currentItemId": session.currentItemID as Any? ?? NSNull(), "mediaRevision": session.trackRevision,
         "sequence": session.progressSequence, "positionMillis": max(0, session.player.positionMillis),
-        "durationMillis": max(0, max(session.lastDuration, session.player.durationMillis))])
+        "durationMillis": max(0, max(session.lastDuration, session.player.durationMillis))]) }
     }
     session.onPiPChange = { [weak self, weak session] active, reason in
       guard let session, Sessions.items[id] === session else { return }
@@ -1449,12 +1464,22 @@ public class ExpoSummonVlcModule: Module {
       event["sessionId"] = id
       event["active"] = active
       event["reason"] = reason as Any? ?? NSNull()
-      self?.sendEvent("onPictureInPictureStateChange", event)
+      if session.eventsAttached { self?.sendEvent("onPictureInPictureStateChange", event) }
     }
     session.onPiPWillStop = { [weak self, weak session] in
       guard let session, Sessions.items[id] === session, session.pipExitTestGeneration == session.pipGeneration else { return }
-      self?.sendEvent("onPictureInPictureExitTest", ["sessionId": id, "stage": "will_stop", "message": SessionPiP.shared.stopDiagnostic(session)])
+      if session.eventsAttached { self?.sendEvent("onPictureInPictureExitTest", ["sessionId": id, "stage": "will_stop", "message": SessionPiP.shared.stopDiagnostic(session)]) }
     }
+  }
+  private func createPlayerSession(options: [String]?) throws -> String {
+    guard Sessions.pendingCleanup == 0 else {
+      throw NSError(domain: "ExpoSummonVlc", code: 16, userInfo: [NSLocalizedDescriptionKey: "A previous VLC player is still being released. Try again after cleanup finishes."])
+    }
+    let id = UUID().uuidString
+    guard let session = PlayerSession(videoOutput: ESVLCSessionOutput(options: options)) else {
+      throw NSError(domain: "ExpoSummonVlc", code: 12, userInfo: [NSLocalizedDescriptionKey: "Could not create the VLC video output"])
+    }
+    bindSession(session, id: id)
     Sessions.items[id] = session
     session.startProgressUpdates()
     return id
@@ -1649,13 +1674,32 @@ public class ExpoSummonVlcModule: Module {
     }.runOnQueue(.main)
     AsyncFunction("setControlCenterEnabled") { (id: String, enabled: Bool) in
       try ControlCenter.shared.setEnabled(enabled, session: Sessions.get(id))
+      if !enabled && Sessions.backgroundSessionID == id { Sessions.backgroundSessionID = nil }
     }.runOnQueue(.main)
 
     AsyncFunction("setBackgroundPlaybackEnabled") { (id: String, enabled: Bool) in
-      _ = try Sessions.get(id)
-      if enabled { throw NSError(domain: "ExpoSummonVlc", code: 24, userInfo: [NSLocalizedDescriptionKey: "Android background playback service is not available on iOS"]) }
+      let session = try Sessions.get(id)
+      if !enabled {
+        if Sessions.backgroundSessionID == id { Sessions.backgroundSessionID = nil }
+        return
+      }
+      guard Sessions.backgroundSessionID == nil || Sessions.backgroundSessionID == id else {
+        throw NSError(domain: "ExpoSummonVlc", code: 24, userInfo: [NSLocalizedDescriptionKey: "Another session is using background playback"])
+      }
+      guard session.player.media != nil else {
+        throw NSError(domain: "ExpoSummonVlc", code: 25, userInfo: [NSLocalizedDescriptionKey: "Load media before enabling background playback"])
+      }
+      guard (Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String])?.contains("audio") == true else {
+        throw NSError(domain: "ExpoSummonVlc", code: 26, userInfo: [NSLocalizedDescriptionKey: "Enable the audio background mode in the app configuration"])
+      }
+      try ControlCenter.shared.setEnabled(true, session: session)
+      Sessions.backgroundSessionID = id
     }.runOnQueue(.main)
-    AsyncFunction("getBackgroundSessionId") { () -> String? in nil }.runOnQueue(.main)
+    AsyncFunction("getBackgroundSessionId") { [self] () -> String? in
+      guard let id = Sessions.backgroundSessionID, let session = Sessions.items[id], !session.releaseInProgress else { return nil }
+      bindSession(session, id: id)
+      return id
+    }.runOnQueue(.main)
 
     AsyncFunction("setPlaybackRate") { (id: String, rate: Double) in
       guard rate.isFinite, (0.25...4).contains(rate) else { throw NSError(domain: "ExpoSummonVlc", code: 18, userInfo: [NSLocalizedDescriptionKey: "Playback rate must be between 0.25 and 4"]) }
@@ -1775,6 +1819,7 @@ public class ExpoSummonVlcModule: Module {
     }.runOnQueue(.main)
     AsyncFunction("stop") { (id: String) in
       let session = try Sessions.get(id)
+      if Sessions.backgroundSessionID == id { Sessions.backgroundSessionID = nil }
       session.cancelAudioResume()
       session.cancelTransition()
       session.autoAdvanceArmed = false
@@ -1788,6 +1833,7 @@ public class ExpoSummonVlcModule: Module {
       }
       session.releaseInProgress = true
       SessionPiP.shared.releaseAfterPiP(session, completion: {
+        if Sessions.backgroundSessionID == id { Sessions.backgroundSessionID = nil }
         ControlCenter.shared.clear(session)
         Sessions.items.removeValue(forKey: id)
         Sessions.pendingCleanup += 1
@@ -1822,10 +1868,18 @@ public class ExpoSummonVlcModule: Module {
       }
       let cleanup = {
         MediaAnalysis.shared.shutdown()
-        SessionPiP.shared.shutdown()
-        ControlCenter.shared.clear()
-        Sessions.items.values.forEach { $0.release() }
-        Sessions.items.removeAll()
+        let retainedID = Sessions.backgroundSessionID
+        if retainedID == nil { SessionPiP.shared.shutdown() }
+        for (id, session) in Array(Sessions.items) {
+          if id == retainedID {
+            session.eventsAttached = false
+            session.output?.detach()
+          } else {
+            ControlCenter.shared.clear(session)
+            Sessions.items.removeValue(forKey: id)
+            session.release()
+          }
+        }
       }
       if Thread.isMainThread { cleanup() } else { DispatchQueue.main.sync(execute: cleanup) }
     }

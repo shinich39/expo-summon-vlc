@@ -281,20 +281,19 @@ await Player.setControlCenterEnabled(sessionId, false);
 
 System media controls are off by default and support one session at a time. They publish the current title, duration and playback state and handle playback, playlist navigation and seeking when available. Android displays a media notification; its layout depends on the system. Audio interruptions and device route changes are handled independently of this option. Resumption depends on the interruption and system behavior; stopping another music app does not guarantee automatic resume.
 
-On Android, opt into the media playback foreground service while the app is visible, after enabling system media controls and loading media:
+To retain a session for background playback and reconnect while the app process remains alive, load media and enable background playback while the app is visible. This also enables system media controls:
 
 ```ts
-await Player.setControlCenterEnabled(sessionId, true);
 await Player.setBackgroundPlaybackEnabled(sessionId, true);
 
 // On a later app launch, reconnect to a still-running session if one exists.
 const existingSessionId = await Player.getBackgroundSessionId();
 
-// Disable the service or release the session when it is no longer needed.
+// Disable background retention or release the session when it is no longer needed.
 await Player.setBackgroundPlaybackEnabled(sessionId, false);
 ```
 
-The service retains the session across activity and Expo module teardown and displays a media notification. Explicit `stop`, `release`, disabling system media controls, or reaching the end of the playlist stops the service. Re-enable it after a stop. The service is not automatically restarted after process death or a force-stop. Android restricts starting foreground services from the background; enable it while the app is visible. On iOS, configure the `audio` background mode instead; enabling the Android service rejects and `getBackgroundSessionId()` returns `null`.
+Android uses a media playback foreground service and displays a media notification. iOS requires the `audio` background mode described above. Both platforms retain the selected session across Expo module teardown and allow `getBackgroundSessionId()` to reconnect while the process remains alive. Explicit `stop`, `release`, disabling system media controls, or reaching the end of the playlist ends background retention. Re-enable it after a stop. Neither platform restores a session after process death or a force-stop. Android restricts starting foreground services from the background; enable it while the app is visible. Disabling background retention leaves system media controls enabled until explicitly disabled or the session is released.
 
 Audio files can use the same session and playback APIs without mounting a `PlayerView`. The example includes an audio test that removes the video view before playing a configurable audio URL. Background audio on iOS requires the `audio` background mode described above.
 
