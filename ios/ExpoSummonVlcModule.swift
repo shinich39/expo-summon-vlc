@@ -1035,6 +1035,7 @@ public class ExpoSummonVlcProbeModule: Module {
 // during a playlist transition without replacing the system PiP controller.
 private final class SessionPiPDrawable: UIView {
   let displayLayer: AVSampleBufferDisplayLayer
+  var disableResizeAnimation = false
   init(displayLayer: AVSampleBufferDisplayLayer) {
     self.displayLayer = displayLayer
     super.init(frame: .zero)
@@ -1044,7 +1045,14 @@ private final class SessionPiPDrawable: UIView {
   required init?(coder: NSCoder) { return nil }
   override func layoutSubviews() {
     super.layoutSubviews()
-    displayLayer.frame = bounds
+    if disableResizeAnimation {
+      CATransaction.begin()
+      CATransaction.setDisableActions(true)
+      displayLayer.frame = bounds
+      CATransaction.commit()
+    } else {
+      displayLayer.frame = bounds
+    }
   }
 }
 
@@ -1277,6 +1285,7 @@ final class PlayerView: ExpoView {
   private var sessionId: String?
   private var videoGravity: AVLayerVideoGravity = .resizeAspect
   private var pictureInPictureActive = false
+  private var disableResizeAnimation = false
   required init(appContext: AppContext? = nil) {
     super.init(appContext: appContext)
     clipsToBounds = true
@@ -1292,7 +1301,14 @@ final class PlayerView: ExpoView {
     if drawable.superview !== videoView { videoView.addSubview(drawable) }
     drawable.frame = videoView.bounds
     drawable.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-    (drawable as? SessionPiPDrawable)?.displayLayer.videoGravity = pictureInPictureActive ? .resizeAspect : videoGravity
+    if let drawable = drawable as? SessionPiPDrawable {
+      drawable.disableResizeAnimation = disableResizeAnimation
+      drawable.displayLayer.videoGravity = pictureInPictureActive ? .resizeAspect : videoGravity
+    }
+  }
+  func setDisableResizeAnimation(_ disabled: Bool) {
+    disableResizeAnimation = disabled
+    videoView.subviews.compactMap { $0 as? SessionPiPDrawable }.forEach { $0.disableResizeAnimation = disabled }
   }
   func setPictureInPictureActive(_ active: Bool) {
     pictureInPictureActive = active
@@ -1754,6 +1770,7 @@ public class ExpoSummonVlcModule: Module {
     View(PlayerView.self) {
       Prop("sessionId") { (view: PlayerView, id: String?) in view.attach(id) }
       Prop("resizeMode") { (view: PlayerView, mode: String?) in view.setResizeMode(mode) }
+      Prop("disableResizeAnimation") { (view: PlayerView, disabled: Bool?) in view.setDisableResizeAnimation(disabled ?? false) }
     }
 
     OnDestroy {

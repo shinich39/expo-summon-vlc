@@ -1167,6 +1167,7 @@ class ExpoSummonVlcModule : Module() {
     View(PlayerView::class) {
       Prop("sessionId") { view: PlayerView, id: String? -> view.attach(id) }
       Prop("resizeMode") { view: PlayerView, mode: String? -> view.setResizeMode(mode) }
+      Prop("disableResizeAnimation") { _: PlayerView, _: Boolean? -> Unit }
       OnViewDestroys { view: PlayerView -> view.detach() }
     }
 

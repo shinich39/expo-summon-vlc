@@ -7,6 +7,8 @@ export type PlayerViewProps = {
   sessionId: string;
   /** Defaults to contain. */
   resizeMode?: VideoResizeMode;
+  /** iOS: disable implicit animations when the internal video layer changes bounds. Defaults to false. */
+  disableResizeAnimation?: boolean;
   style?: StyleProp<ViewStyle>;
 };
 

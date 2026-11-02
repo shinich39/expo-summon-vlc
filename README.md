@@ -114,7 +114,11 @@ export function VideoPlayer({ uri }: { uri: string }) {
 
 `load` replaces the current media and clears the playlist. Playback commands are asynchronous and can reject; a resolved command does not mean that media has finished buffering or a video frame has been displayed. `release` is asynchronous as well. Do not use a released session ID.
 
-`PlayerView` accepts `contain` (the default, preserving the whole frame), `cover` (cropping to fill), or `fill` (stretching). The application controls the inline view's layout. PiP uses contain behavior and its window is controlled by the operating system.
+`PlayerView` accepts `contain` (the default, preserving the whole frame), `cover` (cropping to fill), or `fill` (stretching). The application controls the inline view's layout. On iOS, pass `disableResizeAnimation` to disable implicit animations when the internal video layer changes bounds (default: `false`). This does not disable animations applied by the app to `PlayerView` or its parent, and has no effect on Android. PiP uses contain behavior and its window is controlled by the operating system.
+
+```tsx
+<PlayerView sessionId={sessionId} disableResizeAnimation style={styles.video} />
+```
 
 ## Playback and seeking
 

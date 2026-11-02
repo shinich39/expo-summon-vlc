@@ -73,6 +73,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [ready, setReady] = useState(false);
   const [resizeMode, setResizeMode] = useState<VideoResizeMode>('contain');
+  const [disableResizeAnimation, setDisableResizeAnimation] = useState(false);
+  const [squareVideo, setSquareVideo] = useState(false);
   const [playlistSize, setPlaylistSize] = useState(0);
   const [playlistItems, setPlaylistItems] = useState<PlaylistItem[]>([]);
   const [playlistEditing, setPlaylistEditing] = useState(false);
@@ -807,11 +809,18 @@ export default function App() {
   return (
     <SafeAreaView style={[styles.root, Platform.OS === 'android' && pipMode && styles.pipRoot]}>
       <View style={Platform.OS === 'android' && pipMode ? styles.pipVideoContainer : styles.videoContainer}>
-        {sessionId ? <PlayerView sessionId={sessionId} resizeMode={resizeMode} style={Platform.OS === 'android' && pipMode ? styles.pipVideo : styles.video} /> : <View style={Platform.OS === 'android' && pipMode ? styles.pipVideo : styles.video} />}
+        {sessionId ? <PlayerView sessionId={sessionId} resizeMode={resizeMode} disableResizeAnimation={disableResizeAnimation} style={Platform.OS === 'android' && pipMode ? styles.pipVideo : [styles.video, squareVideo && styles.squareVideo]} /> : <View style={Platform.OS === 'android' && pipMode ? styles.pipVideo : [styles.video, squareVideo && styles.squareVideo]} />}
       </View>
       <ScrollView style={Platform.OS === 'android' && pipMode ? styles.hidden : undefined} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" removeClippedSubviews={false}>
         <Text style={styles.title}>Local playlist transition</Text>
         <View style={Platform.OS === 'android' && pipMode ? styles.hidden : styles.controlGroup}>
+        {Platform.OS === 'ios' && <View>
+          <Text>Resize animation test</Text>
+          <View style={styles.controls}>
+            <Button title={`Layer animation: ${disableResizeAnimation ? 'disabled' : 'default'}`} onPress={() => setDisableResizeAnimation((value) => !value)} />
+            <Button title={`View size: ${squareVideo ? 'square' : '16:9'}`} onPress={() => setSquareVideo((value) => !value)} />
+          </View>
+        </View>}
         <Text>Video fit: {resizeMode}</Text>
         <View style={styles.controls}>
           {(['contain', 'cover', 'fill'] as const).map((mode) => <Button key={mode} title={mode} disabled={resizeMode === mode} onPress={() => setResizeMode(mode)} />)}
@@ -998,6 +1007,7 @@ const styles = StyleSheet.create({
   hidden: { display: 'none' },
   controlGroup: { gap: 12 },
   video: { width: '100%', aspectRatio: 16 / 9, backgroundColor: 'black' },
+  squareVideo: { aspectRatio: 1 },
   pipVideo: { width: '100%', flex: 1, backgroundColor: 'black' },
   timeRow: { flexDirection: 'row', justifyContent: 'space-between' },
   seekTouch: { height: 32, justifyContent: 'center' },
