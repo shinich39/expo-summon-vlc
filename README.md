@@ -269,6 +269,8 @@ A successful start or stop request does not guarantee the system has completed t
 
 On Android the activity enters PiP and the app is responsible for its PiP layout. The example hides its controls and lets the video fill the available activity. The OS controls window size; the module requests an aspect ratio based on the current video. On iOS the session owns the PiP controller and sample-buffer output. Its memory-backed frame output caps the long side at 1280 pixels and can cost more CPU than a native video output.
 
+Android PiP provides 10-second rewind, play/pause, and 10-second forward actions when supported by the device. The system controls their placement and may limit the number displayed. Seeking is limited to the current item and is disabled when the media is not seekable.
+
 For optional iOS Control Center integration:
 
 ```ts

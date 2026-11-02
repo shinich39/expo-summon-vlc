@@ -494,13 +494,21 @@ private class PictureInPictureControls(
       val activity = activityRef.get() ?: return
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || !activity.isInPictureInPictureMode) return
       when (intent.getStringExtra("command")) {
-        "previous" -> runCatching { session.previous() }
-        "next" -> runCatching { session.next() }
+        "rewind" -> seekBy(-10_000)
+        "forward" -> seekBy(10_000)
         "play" -> runCatching { session.playPlayback() }
         "pause" -> session.pausePlayback()
       }
       refresh()
     }
+  }
+
+  private fun seekBy(offset: Long) {
+    val player = session.player
+    val duration = maxOf(player.length, session.lastDuration)
+    if (!player.isSeekable || duration <= 0) return
+    val target = (player.time.coerceAtLeast(0) + offset).coerceIn(0, duration - 1)
+    player.setTime(target)
   }
 
   fun register() {
@@ -523,10 +531,11 @@ private class PictureInPictureControls(
 
   fun actions(): List<RemoteAction> {
     val playing = session.player.isPlaying
-    val previous = makeAction("previous", "Previous", android.R.drawable.ic_media_previous, session.canPrevious())
+    val seekable = session.player.isSeekable && maxOf(session.player.length, session.lastDuration) > 0
+    val previous = makeAction("rewind", "Back 10 seconds", R.drawable.expo_summon_vlc_replay_10, seekable)
     val playback = makeAction(if (playing) "pause" else "play", if (playing) "Pause" else "Play",
-      if (playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play, true)
-    val next = makeAction("next", "Next", android.R.drawable.ic_media_next, session.canNext())
+      if (playing) R.drawable.expo_summon_vlc_pause else R.drawable.expo_summon_vlc_play_arrow, true)
+    val next = makeAction("forward", "Forward 10 seconds", R.drawable.expo_summon_vlc_forward_10, seekable)
     val limit = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) activityRef.get()?.maxNumPictureInPictureActions ?: 0 else 0
     return when {
       limit >= 3 -> listOf(previous, playback, next)
@@ -590,6 +599,12 @@ class PlayerView(context: Context, appContext: AppContext) : ExpoView(context, a
   private var sessionId: String? = null
   private var transitionPending = false
   private var transitionAspectRatio: Double? = null
+  private val transitionFallback = Runnable {
+    if (transitionPending) {
+      sessionId?.let { Sessions.items[it] }?.player?.updateVideoSurfaces()
+      cancelPictureInPictureTransition()
+    }
+  }
   private var resizeMode = MediaPlayer.ScaleType.SURFACE_BEST_FIT
   private var appliedScale: MediaPlayer.ScaleType? = null
 
@@ -634,9 +649,12 @@ class PlayerView(context: Context, appContext: AppContext) : ExpoView(context, a
   }
 
   fun beginPictureInPictureTransition() {
+    output.removeCallbacks(transitionFallback)
     transitionPending = true
     transitionAspectRatio = null
     transitionPlaceholder.visibility = View.VISIBLE
+    // Insets or an app-managed layout can prevent the output ratio matching the video ratio.
+    output.postDelayed(transitionFallback, 1000)
   }
 
   fun onVideoAspectReady(ratio: Double) {
@@ -646,6 +664,7 @@ class PlayerView(context: Context, appContext: AppContext) : ExpoView(context, a
   }
 
   fun cancelPictureInPictureTransition() {
+    output.removeCallbacks(transitionFallback)
     transitionPending = false
     transitionAspectRatio = null
     transitionPlaceholder.visibility = View.GONE
