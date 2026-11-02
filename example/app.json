@@ -6,8 +6,10 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "plugins": ["../app.plugin.js", "./plugins/withSceneLifecycle.js"],
     "ios": {
       "supportsTablet": true,
+      "infoPlist": { "UIBackgroundModes": ["audio"] },
       "bundleIdentifier": "expo.modules.summonvlc.example"
     },
     "android": {
