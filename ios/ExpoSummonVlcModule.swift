@@ -73,11 +73,13 @@ private final class PlayerSession: NSObject {
   private var nativeOrderDirty = false
   private var history: [Int] = []
   private var historyIndex = -1
+  var transitionTimeoutMillis: Double = 10_000
   private var transitionPhase: String?
   private var transitionToken = 0
   private var pendingSelection: Int?
   private var transitionTargetIndex: Int?
   private var transitionFailed = false
+  private var transitionMismatch = false
   private var transitionReady = false
   private var pauseAfterTransition = false
   private var audioInterruptionActive = false
@@ -281,14 +283,17 @@ private final class PlayerSession: NSObject {
   }
 
   func mediaChanged(_ media: VLCMedia) {
-    guard !releaseInProgress, let index = playlistMedia.firstIndex(where: { $0 === media }) else { return }
+    guard !releaseInProgress, !transitionMismatch, let index = playlistMedia.firstIndex(where: { $0 === media }) else { return }
+    if isTransitioning && index != transitionTargetIndex {
+      transitionReady = false
+      return
+    }
     if trackMedia !== media {
       trackMedia = media
       trackRevision = UUID().uuidString
     }
     audioDelayApplied = player.setAudioDelay(millis: audioDelayMillis)
     if isTransitioning {
-      guard index == transitionTargetIndex else { return }
       transitionReady = true
     } else if index != currentIndex {
       currentIndex = index
@@ -383,6 +388,9 @@ private final class PlayerSession: NSObject {
   }
   var playbackError: [String: String]? {
     guard state == "error" else { return nil }
+    if transitionMismatch {
+      return ["code": "TRANSITION_FAILED", "message": "The player switched to a different playlist item."]
+    }
     return transitionFailed
       ? ["code": "TRANSITION_FAILED", "message": "Could not complete the playlist transition."]
       : ["code": "PLAYBACK_FAILED", "message": "The media player reported a playback error."]
@@ -395,12 +403,15 @@ private final class PlayerSession: NSObject {
     pendingSelection = nil
     transitionTargetIndex = nil
     transitionFailed = false
+    transitionMismatch = false
     pauseAfterTransition = false
   }
 
   private func waitForTransition(_ token: Int, deadline: Date) {
     guard token == transitionToken, let phase = transitionPhase else { return }
-    if phase == "starting" && transitionReady && player.isPlaying {
+    if phase == "starting" && transitionReady && player.isPlaying,
+       let target = transitionTargetIndex, playlistMedia.indices.contains(target),
+       player.media === playlistMedia[target] {
       transitionPhase = nil
       transitionTargetIndex = nil
       if pendingSelection != nil {
@@ -408,17 +419,22 @@ private final class PlayerSession: NSObject {
         return
       }
       autoAdvanceArmed = currentIndex >= 0 && playlist.indices.contains(currentIndex)
-      if shuffleEnabled || nativeOrderDirty { rebuildNativeOrder() }
+      rebuildNativeOrder()
       if pauseAfterTransition { pauseAfterTransition = false; player.pause() }
       onStateChange?()
       return
     }
     if Date() >= deadline {
+      let target = transitionTargetIndex
+      let actual = player.media
+      let mismatch = target.map { playlistMedia.indices.contains($0) && actual != nil && actual !== playlistMedia[$0] } ?? false
       transitionPhase = nil
       transitionTargetIndex = nil
       if pendingSelection != nil { beginTransition(); return }
+      transitionMismatch = mismatch
       transitionFailed = true
       autoAdvanceArmed = false
+      if mismatch { videoOutput.stopPlaylist() }
       onStateChange?()
       return
     }
@@ -430,6 +446,7 @@ private final class PlayerSession: NSObject {
   private func beginTransition() {
     guard transitionPhase == nil, pendingSelection != nil else { return }
     transitionFailed = false
+    transitionMismatch = false
     transitionToken += 1
     let token = transitionToken
     guard let index = pendingSelection, playlistMedia.indices.contains(index) else {
@@ -442,16 +459,15 @@ private final class PlayerSession: NSObject {
     transitionPhase = "starting"
     transitionTargetIndex = index
     transitionReady = false
-    rebuildNativeOrder(force: true)
-    guard let nativeIndex = nativeOrder.firstIndex(of: index) else {
-      transitionPhase = nil
-      transitionTargetIndex = nil
-      transitionFailed = true
-      onStateChange?()
-      return
-    }
-    videoOutput.playListItem(at: UInt(nativeIndex))
-    waitForTransition(token, deadline: Date().addingTimeInterval(8))
+    // Keep only the requested media in the native list until playback starts.
+    // Otherwise libVLC may automatically play a later item when this one fails.
+    videoOutput.setListRepeatMode("off")
+    videoOutput.setMediaItems([playlistMedia[index]])
+    nativeOrder = [index]
+    nativeRepeatMode = "off"
+    nativeOrderDirty = true
+    videoOutput.playListItem(at: 0)
+    waitForTransition(token, deadline: Date().addingTimeInterval(transitionTimeoutMillis / 1000))
   }
 
   func resetOrder() {
@@ -495,14 +511,14 @@ private final class PlayerSession: NSObject {
     if record && shuffleEnabled { recordSelection(index) }
     pauseAfterTransition = false
     autoAdvanceArmed = false
-    if transitionPhase == nil && index == currentIndex && wasEnded {
+    if !transitionFailed && transitionPhase == nil && index == currentIndex && wasEnded {
       pendingSeek = 0
       pendingSeekFast = true
       player.play()
       applyPendingSeek()
       return
     }
-    if transitionPhase == nil && index == currentIndex && player.isPlaying {
+    if !transitionFailed && transitionPhase == nil && index == currentIndex && player.isPlaying {
       try seek(to: 0)
       autoAdvanceArmed = true
       return
@@ -577,7 +593,7 @@ private final class PlayerSession: NSObject {
   }
 
   func handlePlaybackFailure() {
-    guard failurePolicy == "skip", let itemID = currentItemID, failedItems.insert(itemID).inserted else { return }
+    guard !transitionMismatch, failurePolicy == "skip", let itemID = currentItemID, failedItems.insert(itemID).inserted else { return }
     let candidates: [Int]
     if shuffleEnabled {
       let remaining = Array(shuffleRemaining.reversed()).filter { playlistItems.indices.contains($0) && !failedItems.contains(playlistItems[$0].id) }
@@ -1606,6 +1622,13 @@ public class ExpoSummonVlcModule: Module {
       session.setShuffle(enabled)
       ControlCenter.shared.refresh(session)
     }.runOnQueue(.main)
+    AsyncFunction("setTransitionTimeout") { (id: String, timeoutMillis: Double) in
+      guard timeoutMillis.isFinite, timeoutMillis >= 1000 else {
+        throw NSError(domain: "ExpoSummonVlc.Transition", code: 1, userInfo: [NSLocalizedDescriptionKey: "Transition timeout must be at least 1000 milliseconds"])
+      }
+      try Sessions.get(id).transitionTimeoutMillis = timeoutMillis
+    }.runOnQueue(.main)
+
     AsyncFunction("setFailurePolicy") { (id: String, policy: String) in
       guard policy == "stop" || policy == "skip" else { throw NSError(domain: "ExpoSummonVlc.Playlist", code: 6, userInfo: [NSLocalizedDescriptionKey: "Invalid playback failure policy"]) }
       let session = try Sessions.get(id)

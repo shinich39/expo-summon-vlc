@@ -88,6 +88,7 @@ export default function App() {
   const [barWidth, setBarWidth] = useState(0);
   const [preview, setPreview] = useState<number | null>(null);
   const [seekPrecision, setSeekPrecision] = useState<'fast' | 'precise'>('fast');
+  const [transitionTimeout, setTransitionTimeout] = useState('10000');
   const [pipSupported, setPipSupported] = useState(false);
   const [pipReason, setPipReason] = useState<string | null>(null);
   const [pipEvent, setPipEvent] = useState('No PiP event yet');
@@ -452,6 +453,80 @@ export default function App() {
       setErrorTestResult(result);
       setMessage(result);
     } finally { setBusy(false); }
+  }
+
+  async function testTransitionMismatch() {
+    if (!sessionId || !probeUri || busy || sessionBusy || playlistEditing || probeActive || analysisBusy || pipMode) return;
+    const id = sessionId;
+    const missingId = 'error-test-mismatch-missing';
+    const validId = 'error-test-mismatch-valid';
+    const events: string[] = [];
+    const states = Player.addListener('onPlaybackStateChange', (event) => {
+      if (event.sessionId === id && event.currentItemId?.startsWith('error-test-mismatch-')) {
+        events.push(`${event.currentItemId}: ${event.state}`);
+      }
+    });
+    const errors = Player.addListener('onPlaybackError', (event) => {
+      if (event.sessionId === id && event.currentItemId === missingId) {
+        events.push(`${event.code}: ${event.message}`);
+      }
+    });
+    setBusy(true);
+    setReady(false);
+    setErrorTestResult(null);
+    pendingSeek.current = null;
+    setPreview(null);
+    try {
+      const missing = new File(Paths.cache, `missing-transition-${Date.now()}-${Math.random().toString(36).slice(2)}.mp4`);
+      const items: PlaylistItem[] = [
+        { id: missingId, uri: missing.uri, title: 'Missing file' },
+        { id: validId, uri: probeUri, title: 'Playable file — must not start' },
+      ];
+      await Player.stop(id);
+      await Player.setFailurePolicy(id, 'stop');
+      const timeout = Platform.OS === 'ios' ? Number(transitionTimeout) : 10000;
+      if (!Number.isFinite(timeout) || timeout < 1000) throw new Error('Transition timeout must be at least 1000 ms');
+      if (Platform.OS === 'ios') await Player.setTransitionTimeout(id, timeout);
+      await Player.setRepeatMode(id, 'off');
+      await Player.setShuffleEnabled(id, false);
+      await Player.setPlaylistItems(id, items);
+      setPlaylistItems(await Player.getPlaylist(id));
+      setPlaylistSize(items.length);
+      setMessage('Testing missing item followed by a playable item; watch for unexpected video or audio…');
+      await Player.selectItem(id, missingId);
+      setReady(true);
+      const observationMillis = timeout + 3000;
+      let remainingMillis = observationMillis;
+      while (remainingMillis > 0) {
+        const delay = Math.min(remainingMillis, 2147483647);
+        await new Promise<void>((resolve) => setTimeout(resolve, delay));
+        if (!mounted.current || sessionRef.current !== id) return;
+        remainingMillis -= delay;
+      }
+      if (!mounted.current || sessionRef.current !== id) return;
+      const status = await Player.getPlaybackStatus(id);
+      const unexpectedItem = status.currentItemId === validId || events.some((event) => event.startsWith(`${validId}:`));
+      const mismatchReported = events.some((event) => event.includes('The player switched to a different playlist item.'));
+      const result = unexpectedItem
+        ? 'FAIL: The playable item was reported after the missing item.'
+        : mismatchReported && status.state === 'error' && status.currentItemId === missingId
+          ? 'Mismatch reported and the session remains in error. Check that video and audio stopped.'
+          : events.some((event) => event.startsWith('TRANSITION_FAILED:') || event.startsWith('PLAYBACK_FAILED:'))
+            ? 'Playback failed without a reported mismatch; this run did not verify the mismatch guard.'
+            : `No playback error observed within ${observationMillis / 1000} seconds; this run is inconclusive.`;
+      const details = `${result}\nStatus: ${status.state} · ${status.currentItemId ?? 'none'}\nEvents: ${events.join(' | ') || 'none'}`;
+      setErrorTestResult(details);
+      setMessage(result);
+      console.log('Transition mismatch test:', details);
+    } catch (error) {
+      const result = `Transition mismatch test command failed: ${String(error)}`;
+      setErrorTestResult(result);
+      setMessage(result);
+    } finally {
+      states.remove();
+      errors.remove();
+      if (mounted.current) setBusy(false);
+    }
   }
 
   async function testFailureSkip(allFail: boolean) {
@@ -888,6 +963,17 @@ export default function App() {
         <Text>{pipEvent}</Text>
         <Button title="Test PiP exit (5s)" disabled={!sessionId || !ready || !pipSupported || pipMode || sessionBusy} onPress={() => void testPipExit()} />
         {Platform.OS === 'ios' && <Button title="Test PiP exit (1s)" disabled={!sessionId || !ready || !pipSupported || pipMode || sessionBusy} onPress={() => void testPipExit(1000)} />}
+        {Platform.OS === 'ios' && <View>
+          <Text>Transition timeout (minimum 1000 ms)</Text>
+          <TextInput style={styles.input} value={transitionTimeout} onChangeText={setTransitionTimeout} keyboardType="number-pad" />
+          <Button title="Apply transition timeout" disabled={!sessionId || sessionBusy || busy} onPress={() => {
+            if (!sessionId) return;
+            const timeout = Number(transitionTimeout);
+            if (!Number.isFinite(timeout) || timeout < 1000) { setMessage('Transition timeout must be at least 1000 ms.'); return; }
+            void Player.setTransitionTimeout(sessionId, timeout).then(() => setMessage(`Transition timeout: ${timeout} ms`)).catch((error: unknown) => setMessage(`Transition timeout: ${String(error)}`));
+          }} />
+        </View>}
+        <Button title="Test transition mismatch" disabled={!sessionId || !probeUri || sessionBusy || busy || playlistEditing || probeActive || analysisBusy || pipMode} onPress={() => void testTransitionMismatch()} />
         <Button title="Test playback error" disabled={!sessionId || sessionBusy || busy || playlistEditing || probeActive || analysisBusy || (Platform.OS === 'android' && pipMode)} onPress={() => void testPlaybackError()} />
         <View style={styles.controls}>
           <Button title="Test skip failure" disabled={!sessionId || !probeUri || sessionBusy || busy || playlistEditing || probeActive || analysisBusy || (Platform.OS === 'android' && pipMode)} onPress={() => void testFailureSkip(false)} />

@@ -33,6 +33,8 @@ declare class ExpoSummonVlcModule extends NativeModule<{
   setRepeatMode(sessionId: string, mode: RepeatMode): Promise<void>;
   setShuffleEnabled(sessionId: string, enabled: boolean): Promise<void>;
   setFailurePolicy(sessionId: string, policy: PlaybackFailurePolicy): Promise<void>;
+  /** iOS only. Applies to subsequent playlist transitions; minimum 1000 ms, default 10000 ms. */
+  setTransitionTimeout(sessionId: string, timeoutMillis: number): Promise<void>;
   /** iOS only; disabled by default. Only one session can own the system controls. */
   setControlCenterEnabled(sessionId: string, enabled: boolean): Promise<void>;
   getPlaybackStatus(sessionId: string): Promise<PlaybackStatus>;

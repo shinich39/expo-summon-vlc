@@ -100,6 +100,8 @@ const progress = Player.addListener('onPlaybackProgress', event => {
 // When no longer needed: progress.remove();
 ```
 
+On iOS or Android, tap **Load** and then **Test transition mismatch** to request a missing item followed by a playable item with failure policy set to stop. The test observes status and error events for the configured timeout plus three seconds (13 seconds by default). On iOS, the test applies the timeout shown in the example. If VLC reports a mismatch, check that the playable video and audio stop. VLC may report an ordinary failure without switching items; in that case the test is inconclusive for the mismatch guard rather than a confirmed pass. The fixture does not force VLC to select a different item. The explicit mismatch guard is implemented on iOS; this test compares the observed Android behavior using the same fixture.
+
 Use **Test playback error** to replace the current playlist with a deliberately
 missing local file. The error event is displayed on screen and logged to the JS
 console. A failed command is shown separately. Tap **Load** to restore the

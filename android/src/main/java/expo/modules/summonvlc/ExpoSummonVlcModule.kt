@@ -43,6 +43,10 @@ private fun unsupportedFrameProbe(): Unit {
   throw UnsupportedOperationException("The frame probe is only available on iOS")
 }
 
+private fun unsupportedTransitionTimeout(): Unit {
+  throw UnsupportedOperationException("Transition timeout is available on iOS only")
+}
+
 private fun unsupportedLiveSubtitleScale(): Unit {
   throw UnsupportedOperationException("Changing subtitle size during playback requires VLC 4; create a styled session instead")
 }
@@ -1023,6 +1027,11 @@ class ExpoSummonVlcModule : Module() {
       session.setShuffle(enabled)
       session.pipControls?.refresh()
     }.runOnQueue(Queues.MAIN)
+    AsyncFunction("setTransitionTimeout") { id: String, _: Double ->
+      Sessions.get(id)
+      unsupportedTransitionTimeout()
+    }.runOnQueue(Queues.MAIN)
+
     AsyncFunction("setFailurePolicy") { id: String, policy: String ->
       require(policy == "stop" || policy == "skip") { "Invalid playback failure policy" }
       Sessions.get(id).failurePolicy = policy

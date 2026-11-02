@@ -176,6 +176,14 @@ await Player.clearPlaylist(sessionId);
 
 `setPlaylist(sessionId, uris)` is also available and generates item IDs; `selectPlaylistItem(sessionId, index)` selects by index. Playlist items do not support VLC options. Removing the current item or clearing the list stops playback. On iOS, editing can be rejected during an active transition.
 
+On iOS, playlist transitions default to a 10,000 ms timeout. Set a value of at least 1,000 ms for subsequent transitions:
+
+```ts
+await Player.setTransitionTimeout(sessionId, 5000);
+```
+
+Changing the timeout does not alter an ongoing transition. Android does not use this timeout and rejects this API. During an iOS selection, the native list temporarily contains only the requested item to prevent automatic playback of another item before the selection succeeds.
+
 Repeat-one applies to automatic playback, while manual next and previous use playlist navigation. Shuffle keeps navigation history. `setFailurePolicy(sessionId, 'skip')` attempts another eligible item after a playback error; the default is `'stop'`. A run of consecutive failures is bounded so that a repeat-all list of failing items does not loop indefinitely.
 
 ## Playback status and events
