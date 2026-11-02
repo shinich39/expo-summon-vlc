@@ -359,10 +359,12 @@ private final class PlayerSession: NSObject {
     guard let target = pendingSeek, videoOutput.nativeIsSeekable(), state == "playing" || state == "paused" else { return }
     let duration = player.durationMillis
     guard duration > 0 else { return }
-    pendingSeek = nil
     let fast = pendingSeekFast
-    pendingSeekFast = true
-    videoOutput.seek(toPosition: Float(min(target / Double(duration), 1)), fast: fast)
+    let millis = Int64(min(target, Double(max(0, duration - 1))))
+    if videoOutput.seek(toMillis: millis, fast: fast) {
+      pendingSeek = nil
+      pendingSeekFast = true
+    }
   }
 
   func seek(to millis: Double, fast: Bool = true) throws {
@@ -381,7 +383,9 @@ private final class PlayerSession: NSObject {
       player.play()
       applyPendingSeek()
     } else {
-      videoOutput.seek(toPosition: Float(target / Double(duration)), fast: fast)
+      guard videoOutput.seek(toMillis: Int64(target), fast: fast) else {
+        throw NSError(domain: "ExpoSummonVlc.Seek", code: 2, userInfo: [NSLocalizedDescriptionKey: "Seek request could not be sent to VLC"])
+      }
     }
   }
 

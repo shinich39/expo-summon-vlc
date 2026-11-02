@@ -145,7 +145,7 @@ await Player.seekTo(sessionId, 30_000, { precision: 'precise' });
 // Use { precision: 'fast' } for faster, potentially less accurate seeking.
 ```
 
-The default on iOS is `fast`. Actual seek accuracy and latency depend on the media and VLC. Android uses its existing LibVLC 3 seek behavior; requesting `precise` rejects on Android. For portable code, omit the option on Android or branch on `Platform.OS`.
+The position passed to `seekTo` is in milliseconds on both platforms. To seek using a fraction, multiply it by the media duration in milliseconds. The default on iOS is `fast`. Actual seek accuracy and latency depend on the media and VLC. Android uses its existing LibVLC 3 seek behavior; requesting `precise` rejects on Android. For portable code, omit the option on Android or branch on `Platform.OS`.
 
 Playback rate is a request and the effective rate can depend on the media. Volume is independent of device volume; muting preserves the configured session volume. Audio delay accepts values from -10,000 to 10,000 ms and is reapplied on media changes. Check `audioDelayApplied` in the playback status to see whether VLC accepted it.
 

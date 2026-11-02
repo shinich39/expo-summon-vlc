@@ -204,8 +204,8 @@ static const struct libvlc_media_player_watch_time_cbs ESClockCallbacks = {
   }
 }
 - (void)handleLength:(int64_t)length { if (!_closed && self.lengthChanged) self.lengthChanged(length); }
-- (void)seekToPosition:(float)position fast:(BOOL)fast {
-  if (_native && self.isSeekable) libvlc_media_player_set_position(_native, position, fast);
+- (BOOL)seekToMillis:(int64_t)millis fast:(BOOL)fast {
+  return _native && self.isSeekable && libvlc_media_player_set_time(_native, MAX(0, millis) * 1000, fast) == 0;
 }
 - (BOOL)jumpWithOffset:(int32_t)offset completion:(void (^)(void))completion {
   if (!_native || !self.isSeekable) return NO;

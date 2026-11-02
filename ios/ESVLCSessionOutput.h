@@ -25,7 +25,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)setAudioDelayMillis:(int64_t)delayMillis NS_SWIFT_NAME(setAudioDelay(millis:));
 - (BOOL)isPlayerStopped;
 - (BOOL)nativeIsSeekable;
-- (void)seekToPosition:(float)position fast:(BOOL)fast NS_SWIFT_NAME(seek(toPosition:fast:));
+- (BOOL)seekToMillis:(int64_t)millis fast:(BOOL)fast NS_SWIFT_NAME(seek(toMillis:fast:));
 - (BOOL)jumpWithOffset:(int32_t)offset completion:(void (^)(void))completion NS_SWIFT_NAME(jump(withOffset:completion:));
 - (void)play;
 - (void)pause;
