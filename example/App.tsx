@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+import { Asset } from 'expo-asset';
 import { Directory, File, Paths } from 'expo-file-system';
 import { AppState, Button, Image, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import Player, { PlayerView, type MediaInspection, type MediaThumbnail, type PlaybackStatus, type PlaybackTracks, type PlaybackTrackType, type PlaylistItem, type RepeatMode, type SubtitleStyle, type VideoResizeMode } from '../src';
+import Player, { PlayerView, type AlbumArt, type MediaInspection, type MediaThumbnail, type PlaybackStatus, type PlaybackTracks, type PlaybackTrackType, type PlaylistItem, type RepeatMode, type SubtitleStyle, type VideoResizeMode } from '../src';
 import FrameProbePreview from './FrameProbePreview';
 
 function formatTime(millis: number): string {
@@ -108,9 +109,12 @@ export default function App() {
   const [analysisMessage, setAnalysisMessage] = useState('Inspect the URL, or save the files before generating a thumbnail.');
   const [inspection, setInspection] = useState<MediaInspection | null>(null);
   const [thumbnail, setThumbnail] = useState<MediaThumbnail | null>(null);
+  const [albumArt, setAlbumArt] = useState<AlbumArt | null>(null);
   const [thumbnailPosition, setThumbnailPosition] = useState('1000');
   const analysisRequest = useRef<string | null>(null);
+  const nativeAnalysisRequest = useRef<string | null>(null);
   const thumbnailFile = useRef<string | null>(null);
+  const albumArtFile = useRef<string | null>(null);
   const requestSequence = useRef(0);
   const dragItem = useRef<number | null>(null);
   const pendingSeek = useRef<{ index: number; target: number; deadline: number; sent: boolean } | null>(null);
@@ -357,9 +361,11 @@ export default function App() {
   }, []);
 
   useEffect(() => () => {
-    if (analysisRequest.current) void Player.cancelMediaJob(analysisRequest.current).catch(() => {});
+    if (nativeAnalysisRequest.current) void Player.cancelMediaJob(nativeAnalysisRequest.current).catch(() => {});
     deleteThumbnail(thumbnailFile.current);
     thumbnailFile.current = null;
+    deleteThumbnail(albumArtFile.current);
+    albumArtFile.current = null;
   }, []);
 
   useEffect(() => {
@@ -785,11 +791,13 @@ export default function App() {
     setAnalysisMessage(kind === 'metadata' ? 'Inspecting media…' : 'Generating thumbnail…');
     try {
       if (kind === 'metadata') {
+        nativeAnalysisRequest.current = id;
         const result = await Player.inspectMedia(id, analysisUri ?? firstUri.trim(), 15000);
         if (!mounted.current) return;
         setInspection(result);
         setAnalysisMessage('Metadata ready.');
       } else if (analysisUri) {
+        nativeAnalysisRequest.current = id;
         const result = await Player.generateThumbnail(id, analysisUri, position, 15000);
         if (!mounted.current) { const file = new File(result.uri); if (file.exists) file.delete(); return; }
         deleteThumbnail(thumbnailFile.current);
@@ -806,6 +814,39 @@ export default function App() {
     }
     finally {
       if (analysisRequest.current === id) analysisRequest.current = null;
+      if (nativeAnalysisRequest.current === id) nativeAnalysisRequest.current = null;
+      if (mounted.current) setAnalysisBusy(false);
+    }
+  }
+
+  async function extractAlbumArtTest(fixture: 'sample' | 'full-id3') {
+    if (analysisRequest.current || analysisBusy) return;
+    const id = `album-art-${Date.now()}-${++requestSequence.current}`;
+    analysisRequest.current = id;
+    setAnalysisBusy(true);
+    setAnalysisMessage('Preparing bundled MP3 fixture…');
+    try {
+      const moduleId = fixture === 'sample'
+        ? require('./assets/mp3/sample-id3-cover.mp3')
+        : require('./assets/mp3/mp3-full-id3-cover.mp3');
+      const asset = Asset.fromModule(moduleId);
+      await asset.downloadAsync();
+      const localUri = asset.localUri;
+      if (!localUri) throw new Error('Expo did not provide a local URI for the bundled audio fixture.');
+      if (!mounted.current) return;
+      setAnalysisMessage('Extracting embedded album art…');
+      nativeAnalysisRequest.current = id;
+      const result = await Player.extractAlbumArt(id, localUri, 15000);
+      if (!mounted.current) { if (result) deleteThumbnail(result.uri); return; }
+      deleteThumbnail(albumArtFile.current);
+      albumArtFile.current = result?.uri ?? null;
+      setAlbumArt(result);
+      setAnalysisMessage(result ? 'Album art extracted.' : 'No embedded album art found in this file.');
+    } catch (error) {
+      if (mounted.current) setAnalysisMessage(`Album art: ${String(error)}`);
+    } finally {
+      if (analysisRequest.current === id) analysisRequest.current = null;
+      if (nativeAnalysisRequest.current === id) nativeAnalysisRequest.current = null;
       if (mounted.current) setAnalysisBusy(false);
     }
   }
@@ -1108,7 +1149,12 @@ export default function App() {
         <Text>Thumbnail position (milliseconds)</Text>
         <TextInput style={styles.input} value={thumbnailPosition} onChangeText={setThumbnailPosition} keyboardType="numeric" />
         <Button title="Generate thumbnail" disabled={analysisBusy || busy || !analysisUri} onPress={() => void analyze('thumbnail')} />
-        <Button title="Cancel analysis" disabled={!analysisBusy} onPress={() => { const id = analysisRequest.current; if (id) void Player.cancelMediaJob(id).catch((error: unknown) => setAnalysisMessage(String(error))); }} />
+        <Text style={styles.heading}>Audio album art</Text>
+        <Text>Bundled MP3 fixtures with embedded PNG artwork:</Text>
+        <Button title="Extract sample-id3-cover.mp3" disabled={analysisBusy || busy} onPress={() => void extractAlbumArtTest('sample')} />
+        <Button title="Extract mp3-full-id3-cover.mp3" disabled={analysisBusy || busy} onPress={() => void extractAlbumArtTest('full-id3')} />
+        {albumArt && <View><Image source={{ uri: albumArt.uri }} style={styles.video} resizeMode="contain" /><Text>{albumArt.width} × {albumArt.height} · {albumArt.uri}</Text></View>}
+        <Button title="Cancel analysis" disabled={!nativeAnalysisRequest.current} onPress={() => { const id = nativeAnalysisRequest.current; if (id) void Player.cancelMediaJob(id).catch((error: unknown) => setAnalysisMessage(String(error))); }} />
         {inspection && <Text selectable>{JSON.stringify(inspection, null, 2)}</Text>}
         {thumbnail && <View><Image source={{ uri: thumbnail.uri }} style={styles.video} resizeMode="contain" /><Text>Requested: {thumbnail.requestedPositionMillis} ms · Actual: {thumbnail.actualPositionMillis === null ? 'not reported' : `${Math.round(thumbnail.actualPositionMillis)} ms`} · {thumbnail.width} × {thumbnail.height}</Text></View>}
         <View style={styles.controls}>

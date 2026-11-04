@@ -1105,6 +1105,11 @@ class ExpoSummonVlcModule : Module() {
       if (context == null) promise.reject("ERR_MEDIA_CONTEXT", "React context is unavailable", null)
       else MediaAnalysis.inspect(context, id, uri, timeout, promise)
     }.runOnQueue(Queues.MAIN)
+    AsyncFunction("extractAlbumArt") { id: String, uri: String, timeout: Int, promise: Promise ->
+      val context = appContext.reactContext
+      if (context == null) promise.reject("ERR_MEDIA_CONTEXT", "React context is unavailable", null)
+      else MediaAnalysis.extractAlbumArt(context, id, uri, timeout, promise)
+    }.runOnQueue(Queues.MAIN)
     AsyncFunction("generateThumbnail") { id: String, uri: String, position: Double, timeout: Int, promise: Promise ->
       val context = appContext.reactContext
       if (context == null) promise.reject("ERR_MEDIA_CONTEXT", "React context is unavailable", null)

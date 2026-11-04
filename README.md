@@ -315,6 +315,13 @@ console.log(metadata, thumbnail.uri);
 
 Request IDs must be unique among pending jobs. Only one inspection or thumbnail job runs at a time; after cancellation or timeout, native cleanup can briefly leave the service busy. Timeouts must be 100–120,000 ms. Metadata accepts local file, HTTP and HTTPS URIs; thumbnails currently require local files. Thumbnails are temporary JPEG files owned by the caller. iOS uses AVFoundation and reports the selected frame time when available; Android uses `MediaMetadataRetriever` and does not report the actual frame time. Their codec support can differ from VLC.
 
+Extract embedded album art from a local audio file with `extractAlbumArt`. It returns a temporary JPEG file URI and its dimensions, or `null` when the file has no embedded artwork. The caller owns and must delete the returned file. Android uses `MediaMetadataRetriever`; iOS uses VLCKit media metadata. Artwork format support depends on each platform parser and the media container/tag; there is no cross-platform format guarantee.
+
+```ts
+const albumArt = await Player.extractAlbumArt('album-art-1', localAudioUri, 15_000);
+if (albumArt) console.log(albumArt.uri, albumArt.width, albumArt.height);
+```
+
 To check for audio and video tracks before playback, inspect the URI and examine its tracks:
 
 ```ts

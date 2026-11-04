@@ -2,6 +2,7 @@ package expo.modules.summonvlc
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -183,6 +184,54 @@ internal object MediaAnalysis {
         if (resultFile == null) { fail(job, "ERR_THUMBNAIL", resultError?.message ?: "Could not extract thumbnail", resultError); return@post }
         job.done = true
         job.promise.resolve(mapOf("uri" to Uri.fromFile(resultFile).toString(), "requestedPositionMillis" to position, "actualPositionMillis" to null, "width" to resultWidth, "height" to resultHeight))
+        cleanup(job)
+      }
+    }
+  }
+
+  fun extractAlbumArt(context: Context, id: String, uri: String, timeout: Int, promise: Promise) {
+    val source = Uri.parse(uri)
+    if (!source.scheme.equals("file", true) || source.path.isNullOrEmpty()) {
+      promise.reject("ERR_MEDIA_ARGUMENT", "Album art extraction requires a local file URI", null)
+      return
+    }
+    val job = begin(id, timeout, promise) ?: return
+    worker.execute {
+      var file: File? = null
+      var bitmap: Bitmap? = null
+      var error: Exception? = null
+      var width = 0
+      var height = 0
+      try {
+        val retriever = MediaMetadataRetriever()
+        try {
+          retriever.setDataSource(source.path!!)
+          val bytes = retriever.embeddedPicture
+          if (bytes != null) {
+            bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+              ?: throw IllegalStateException("Could not decode embedded album art")
+            val image = bitmap!!
+            val scale = min(1.0, 640.0 / max(image.width, image.height))
+            val output = if (scale < 1.0) Bitmap.createScaledBitmap(image,
+              max(1, (image.width * scale).roundToInt()), max(1, (image.height * scale).roundToInt()), true) else image
+            if (output !== image) { image.recycle(); bitmap = output }
+            width = output.width
+            height = output.height
+            file = File(context.applicationContext.cacheDir, "summon-vlc-${UUID.randomUUID()}.jpg")
+            file!!.outputStream().use { if (!output.compress(Bitmap.CompressFormat.JPEG, 90, it)) throw IllegalStateException("Could not encode album art") }
+          }
+        } finally { retriever.release() }
+      } catch (failure: Exception) { error = failure; file?.delete(); file = null }
+      finally { bitmap?.recycle() }
+      val resultFile = file
+      val resultError = error
+      val resultWidth = width
+      val resultHeight = height
+      main.post {
+        if (current !== job || job.done) { resultFile?.delete(); if (current === job) cleanup(job); return@post }
+        if (resultError != null) { fail(job, "ERR_ALBUM_ART", resultError.message ?: "Could not extract album art", resultError); return@post }
+        job.done = true
+        job.promise.resolve(resultFile?.let { mapOf("uri" to Uri.fromFile(it).toString(), "width" to resultWidth, "height" to resultHeight) })
         cleanup(job)
       }
     }

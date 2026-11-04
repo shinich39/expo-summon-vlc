@@ -178,3 +178,10 @@ export type MediaThumbnail = {
   width: number;
   height: number;
 };
+
+export type AlbumArt = {
+  /** Temporary JPEG file owned by the caller; delete it when no longer needed. */
+  uri: string;
+  width: number;
+  height: number;
+};

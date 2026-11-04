@@ -1,5 +1,5 @@
 import { NativeModule, requireNativeModule } from 'expo';
-import type { MediaInspection, MediaThumbnail, PictureInPictureExitTestEvent, PictureInPictureState, PictureInPictureStateChange, PlaybackErrorEvent, PlaybackFailurePolicy, PlaybackProgress, PlaybackStateChange, PlaybackStatus, PlaybackTracks, PlaybackTrackType, PlaylistItem, RepeatMode, SeekOptions, SubtitleStyle, SubtitleStyleCapabilities } from './ExpoSummonVlc.types';
+import type { AlbumArt, MediaInspection, MediaThumbnail, PictureInPictureExitTestEvent, PictureInPictureState, PictureInPictureStateChange, PlaybackErrorEvent, PlaybackFailurePolicy, PlaybackProgress, PlaybackStateChange, PlaybackStatus, PlaybackTracks, PlaybackTrackType, PlaylistItem, RepeatMode, SeekOptions, SubtitleStyle, SubtitleStyleCapabilities } from './ExpoSummonVlc.types';
 
 declare class ExpoSummonVlcModule extends NativeModule<{
   onPlaybackStateChange: (event: PlaybackStateChange) => void;
@@ -71,6 +71,8 @@ declare class ExpoSummonVlcModule extends NativeModule<{
   stopFrameProbePictureInPicture(): Promise<void>;
   /** requestId must be unique among pending inspection and thumbnail jobs. */
   inspectMedia(requestId: string, uri: string, timeoutMillis: number): Promise<MediaInspection>;
+  /** Local audio files only. Returns null when no embedded album art exists. Caller owns the temporary JPEG. */
+  extractAlbumArt(requestId: string, uri: string, timeoutMillis: number): Promise<AlbumArt | null>;
   /** Local files only. Output is a temporary JPEG; the caller owns its cleanup. */
   generateThumbnail(requestId: string, uri: string, positionMillis: number, timeoutMillis: number): Promise<MediaThumbnail>;
   cancelMediaJob(requestId: string): Promise<boolean>;

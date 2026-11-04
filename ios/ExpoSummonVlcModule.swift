@@ -801,6 +801,8 @@ private final class MediaAnalysis: NSObject, VLCMediaDelegate {
     var media: VLCMedia?
     var generator: AVAssetImageGenerator?
     var deadline: DispatchWorkItem?
+    var artworkSettle: DispatchWorkItem?
+    var extractingAlbumArt = false
     var completed = false
     init(id: String, promise: Promise) { self.id = id; self.promise = promise }
   }
@@ -829,6 +831,7 @@ private final class MediaAnalysis: NSObject, VLCMediaDelegate {
     guard job === current, !current.completed else { return }
     current.completed = true
     current.deadline?.cancel()
+    current.artworkSettle?.cancel()
     current.media?.delegate = nil
     if let code { current.promise.reject(code, message) } else { current.promise.resolve(value) }
     job = nil
@@ -876,6 +879,17 @@ private final class MediaAnalysis: NSObject, VLCMediaDelegate {
         self.finish(current, code: "ERR_MEDIA_PARSE", message: "Media parsing failed or timed out (status \(media.parsedStatus.rawValue))")
         return
       }
+      if current.extractingAlbumArt {
+        if self.finishAlbumArt(current, media: media) { return }
+        let settle = DispatchWorkItem { [weak self, weak current, weak media] in
+          guard let self, let current, let media, self.job === current, !current.completed else { return }
+          if !self.finishAlbumArt(current, media: media) { self.finish(current, value: nil) }
+        }
+        current.artworkSettle?.cancel()
+        current.artworkSettle = settle
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(750), execute: settle)
+        return
+      }
       let tracks: [[String: Any]] = media.tracksInformation.map { source in
         var track: [String: Any] = ["type": source.video != nil ? "video" : (source.audio != nil ? "audio" : "unknown"), "id": source.identifier, "bitrate": source.bitrate, "codec": source.codecName()]
         if let language = source.language { track["language"] = language }
@@ -889,6 +903,45 @@ private final class MediaAnalysis: NSObject, VLCMediaDelegate {
       }
       let duration = media.length.intValue
       self.finish(current, value: ["durationMillis": duration > 0 ? duration as Any : NSNull(), "title": media.metaData.title as Any? ?? NSNull(), "tracks": tracks])
+    }
+  }
+  func mediaDidChangeArtwork(_ media: VLCMedia) {
+    DispatchQueue.main.async {
+      guard let current = self.job, current.media === media, current.extractingAlbumArt, !current.completed else { return }
+      _ = self.finishAlbumArt(current, media: media)
+    }
+  }
+  private func finishAlbumArt(_ current: Job, media: VLCMedia) -> Bool {
+    guard let image = media.metaData.artwork,
+          let source = image.cgImage else { return false }
+    let scale = min(1, 640 / CGFloat(max(source.width, source.height)))
+    let size = CGSize(width: CGFloat(source.width) * scale, height: CGFloat(source.height) * scale)
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    let renderer = UIGraphicsImageRenderer(size: size, format: format)
+    let output = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+    guard let bytes = output.jpegData(compressionQuality: 0.9) else { return false }
+    let destination = FileManager.default.temporaryDirectory.appendingPathComponent("summon-vlc-\(UUID().uuidString).jpg")
+    do {
+      try bytes.write(to: destination, options: .atomic)
+      finish(current, value: ["uri": destination.absoluteString, "width": Int(size.width), "height": Int(size.height)])
+    } catch {
+      finish(current, code: "ERR_ALBUM_ART", message: "Could not write album art")
+    }
+    return true
+  }
+  func extractAlbumArt(id: String, uri: String, timeout: Int, promise: Promise) {
+    guard let url = URL(string: uri), url.isFileURL else {
+      promise.reject("ERR_MEDIA_ARGUMENT", "Album art extraction requires a local file URI")
+      return
+    }
+    guard let current = begin(id, timeout: timeout, promise: promise) else { return }
+    guard let media = VLCMedia(url: url) else { finish(current, code: "ERR_MEDIA_PARSE", message: "Could not create media"); return }
+    current.media = media
+    current.extractingAlbumArt = true
+    media.delegate = self
+    if ESVLCFrameProbe.parseMedia(media, options: 0, timeout: Int32(timeout)) != 0 {
+      finish(current, code: "ERR_MEDIA_PARSE", message: "Could not start media parsing")
     }
   }
   func thumbnail(id: String, uri: String, position: Double, timeout: Int, promise: Promise) {
@@ -1537,6 +1590,9 @@ public class ExpoSummonVlcModule: Module {
 
     AsyncFunction("inspectMedia") { (id: String, uri: String, timeout: Int, promise: Promise) in
       MediaAnalysis.shared.inspect(id: id, uri: uri, timeout: timeout, promise: promise)
+    }.runOnQueue(.main)
+    AsyncFunction("extractAlbumArt") { (id: String, uri: String, timeout: Int, promise: Promise) in
+      MediaAnalysis.shared.extractAlbumArt(id: id, uri: uri, timeout: timeout, promise: promise)
     }.runOnQueue(.main)
     AsyncFunction("generateThumbnail") { (id: String, uri: String, position: Double, timeout: Int, promise: Promise) in
       MediaAnalysis.shared.thumbnail(id: id, uri: uri, position: position, timeout: timeout, promise: promise)

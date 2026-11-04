@@ -43,14 +43,23 @@ const thumbnail = await Player.generateThumbnail('thumb-1', localFileUri, 1000, 
 // While a request is pending: await Player.cancelMediaJob(requestId);
 ```
 
-Only one metadata or thumbnail job is allowed at once. Timeout must be 100 to
-120000 ms. Metadata accepts file, HTTP and HTTPS URIs; thumbnail generation
-currently accepts local file URIs only. Thumbnails use AVFoundation on iOS and
-MediaMetadataRetriever on Android, so codec support can differ from VLC and
-extraction can fail for a file VLC can play. Android returns a nearby frame and
-does not report its actual timestamp. After cancellation or timeout, a native
-operation may still be finishing; subsequent requests can briefly return busy.
-These APIs and their codec coverage still require device verification.
+Only one metadata, thumbnail, or album art job is allowed at once. Timeout must
+be 100 to 120000 ms. Metadata accepts file, HTTP and HTTPS URIs; thumbnail and
+album art extraction currently require local file URIs. The **Audio album art**
+controls load either bundled MP3 fixture (`sample-id3-cover.mp3` or
+`mp3-full-id3-cover.mp3`) with Expo Asset, pass its device-local URI to
+`extractAlbumArt`, and display the result. Both fixtures contain an embedded
+PNG cover. The extracted temporary JPEG is deleted when replaced or when the
+screen is destroyed.
+
+Thumbnails use AVFoundation on iOS and MediaMetadataRetriever on Android, so
+codec support can differ from VLC and extraction can fail for a file VLC can
+play. Android returns a nearby frame and does not report its actual timestamp.
+Album art uses VLCKit metadata on iOS and MediaMetadataRetriever on Android;
+tag and container support can differ between platforms. After cancellation or
+timeout, a native operation may still be finishing; subsequent requests can
+briefly return busy. These APIs and their format coverage still require device
+verification.
 
 The default first clip is landscape (1920×1080, 16:9); the default second clip
 is portrait (720×1280, 9:16), as measured from the current files. The playlist
