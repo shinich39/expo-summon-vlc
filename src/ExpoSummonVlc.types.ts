@@ -185,3 +185,13 @@ export type AlbumArt = {
   width: number;
   height: number;
 };
+
+/** Local image file used for system media artwork. */
+export type MediaArtwork = {
+  uri: string;
+  width: number;
+  height: number;
+};
+
+/** A local image file URI, or null to clear custom system artwork. */
+export type MediaArtworkSource = { uri: string };

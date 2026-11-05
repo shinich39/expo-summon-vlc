@@ -1,5 +1,5 @@
 import { NativeModule, requireNativeModule } from 'expo';
-import type { AlbumArt, MediaInspection, MediaThumbnail, PictureInPictureExitTestEvent, PictureInPictureState, PictureInPictureStateChange, PlaybackErrorEvent, PlaybackFailurePolicy, PlaybackProgress, PlaybackStateChange, PlaybackStatus, PlaybackTracks, PlaybackTrackType, PlaylistItem, RepeatMode, SeekOptions, SubtitleStyle, SubtitleStyleCapabilities } from './ExpoSummonVlc.types';
+import type { AlbumArt, MediaArtwork, MediaArtworkSource, MediaInspection, MediaThumbnail, PictureInPictureExitTestEvent, PictureInPictureState, PictureInPictureStateChange, PlaybackErrorEvent, PlaybackFailurePolicy, PlaybackProgress, PlaybackStateChange, PlaybackStatus, PlaybackTracks, PlaybackTrackType, PlaylistItem, RepeatMode, SeekOptions, SubtitleStyle, SubtitleStyleCapabilities } from './ExpoSummonVlc.types';
 
 declare class ExpoSummonVlcModule extends NativeModule<{
   onPlaybackStateChange: (event: PlaybackStateChange) => void;
@@ -37,6 +37,8 @@ declare class ExpoSummonVlcModule extends NativeModule<{
   setTransitionTimeout(sessionId: string, timeoutMillis: number): Promise<void>;
   /** Disabled by default. Only one session can own the system media controls. */
   setControlCenterEnabled(sessionId: string, enabled: boolean): Promise<void>;
+  /** Sets or clears custom Control Center / MediaSession artwork from a local image URI. */
+  setControlCenterArtwork(sessionId: string, artwork: MediaArtworkSource | null): Promise<void>;
   /** Enable after loading media, while the app is foregrounded; also enables system media controls. */
   setBackgroundPlaybackEnabled(sessionId: string, enabled: boolean): Promise<void>;
   /** Returns the retained session while background playback is enabled. */
@@ -75,6 +77,8 @@ declare class ExpoSummonVlcModule extends NativeModule<{
   extractAlbumArt(requestId: string, uri: string, timeoutMillis: number): Promise<AlbumArt | null>;
   /** Local files only. Output is a temporary JPEG; the caller owns its cleanup. */
   generateThumbnail(requestId: string, uri: string, positionMillis: number, timeoutMillis: number): Promise<MediaThumbnail>;
+  /** Saves the currently decoded video frame as a temporary JPEG. Requires an active video output on Android. */
+  captureCurrentFrame(sessionId: string): Promise<MediaArtwork>;
   cancelMediaJob(requestId: string): Promise<boolean>;
   play(sessionId: string): Promise<void>;
   pause(sessionId: string): Promise<void>;

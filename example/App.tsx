@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Asset } from 'expo-asset';
 import { Directory, File, Paths } from 'expo-file-system';
 import { AppState, Button, Image, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import Player, { PlayerView, type AlbumArt, type MediaInspection, type MediaThumbnail, type PlaybackStatus, type PlaybackTracks, type PlaybackTrackType, type PlaylistItem, type RepeatMode, type SubtitleStyle, type VideoResizeMode } from '../src';
+import Player, { PlayerView, type AlbumArt, type MediaArtwork, type MediaInspection, type MediaThumbnail, type PlaybackStatus, type PlaybackTracks, type PlaybackTrackType, type PlaylistItem, type RepeatMode, type SubtitleStyle, type VideoResizeMode } from '../src';
 import FrameProbePreview from './FrameProbePreview';
 
 function formatTime(millis: number): string {
@@ -110,11 +110,13 @@ export default function App() {
   const [inspection, setInspection] = useState<MediaInspection | null>(null);
   const [thumbnail, setThumbnail] = useState<MediaThumbnail | null>(null);
   const [albumArt, setAlbumArt] = useState<AlbumArt | null>(null);
+  const [capturedFrame, setCapturedFrame] = useState<MediaArtwork | null>(null);
   const [thumbnailPosition, setThumbnailPosition] = useState('1000');
   const analysisRequest = useRef<string | null>(null);
   const nativeAnalysisRequest = useRef<string | null>(null);
   const thumbnailFile = useRef<string | null>(null);
   const albumArtFile = useRef<string | null>(null);
+  const capturedFrameFile = useRef<string | null>(null);
   const requestSequence = useRef(0);
   const dragItem = useRef<number | null>(null);
   const pendingSeek = useRef<{ index: number; target: number; deadline: number; sent: boolean } | null>(null);
@@ -366,6 +368,8 @@ export default function App() {
     thumbnailFile.current = null;
     deleteThumbnail(albumArtFile.current);
     albumArtFile.current = null;
+    deleteThumbnail(capturedFrameFile.current);
+    capturedFrameFile.current = null;
   }, []);
 
   useEffect(() => {
@@ -878,6 +882,30 @@ export default function App() {
     }
   }
 
+  async function captureAndPublishFrame() {
+    if (!sessionId || !controlCenterEnabled || controlCenterBusy) return;
+    setControlCenterBusy(true);
+    try {
+      const frame = await Player.captureCurrentFrame(sessionId);
+      deleteThumbnail(capturedFrameFile.current);
+      capturedFrameFile.current = frame.uri;
+      setCapturedFrame(frame);
+      await Player.setControlCenterArtwork(sessionId, { uri: frame.uri });
+      setMessage(`Current frame published as system media artwork (${frame.width} × ${frame.height}).`);
+    } catch (error) { setMessage(`Frame artwork: ${String(error)}`); }
+    finally { setControlCenterBusy(false); }
+  }
+
+  async function publishExtractedAlbumArt() {
+    if (!sessionId || !controlCenterEnabled || !albumArt || controlCenterBusy) return;
+    setControlCenterBusy(true);
+    try {
+      await Player.setControlCenterArtwork(sessionId, { uri: albumArt.uri });
+      setMessage('Extracted album art published as system media artwork.');
+    } catch (error) { setMessage(`Album artwork: ${String(error)}`); }
+    finally { setControlCenterBusy(false); }
+  }
+
   async function toggleBackgroundPlayback() {
     if (!sessionId || controlCenterBusy) return;
     setControlCenterBusy(true);
@@ -997,6 +1025,9 @@ export default function App() {
         <Button title="Start audio test" disabled={!sessionId || sessionBusy || busy || pipMode} onPress={() => void startAudioTest()} />
         <Text>{audioOnly ? 'Audio mode: PlayerView is not mounted.' : 'Video view is active.'}</Text>
         <Button title={`System media controls: ${controlCenterEnabled ? 'On' : 'Off'}`} disabled={!sessionId || sessionBusy || controlCenterBusy} onPress={() => void toggleControlCenter()} />
+        <Button title="Capture current frame and publish artwork" disabled={!sessionId || !ready || !controlCenterEnabled || controlCenterBusy || audioOnly} onPress={() => void captureAndPublishFrame()} />
+        {albumArt && <Button title="Publish extracted album art" disabled={!sessionId || !controlCenterEnabled || controlCenterBusy} onPress={() => void publishExtractedAlbumArt()} />}
+        {capturedFrame && <View><Image source={{ uri: capturedFrame.uri }} style={styles.video} resizeMode="contain" /><Text>Published frame: {capturedFrame.width} × {capturedFrame.height}</Text></View>}
         <Button title={`Background playback: ${backgroundEnabled ? 'On' : 'Off'}`} disabled={!sessionId || !ready || sessionBusy || controlCenterBusy} onPress={() => void toggleBackgroundPlayback()} />
         {Platform.OS === 'ios' && <View>
           <Text>Resize animation test</Text>

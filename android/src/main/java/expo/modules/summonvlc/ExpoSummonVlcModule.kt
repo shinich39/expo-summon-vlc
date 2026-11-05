@@ -17,6 +17,8 @@ import android.os.IBinder
 import android.content.pm.PackageManager
 import android.graphics.Rect
 import android.graphics.Color
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.drawable.Icon
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
@@ -30,6 +32,9 @@ import android.os.SystemClock
 import android.util.Log
 import android.util.Rational
 import android.view.View
+import android.view.ViewGroup
+import android.view.SurfaceView
+import android.view.PixelCopy
 import android.widget.FrameLayout
 import androidx.core.util.Consumer
 import android.widget.LinearLayout
@@ -46,6 +51,7 @@ import org.videolan.libvlc.interfaces.IMedia
 import org.videolan.libvlc.util.VLCVideoLayout
 import java.util.UUID
 import java.lang.ref.WeakReference
+import java.io.File
 
 private fun unsupportedFrameProbe(): Unit {
   throw UnsupportedOperationException("The frame probe is only available on iOS")
@@ -165,6 +171,7 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
   var muted = false
   var audioDelayMillis = 0L
   var audioDelayApplied = false
+  var systemArtwork: Bitmap? = null
   var repeatMode = "off"
   var shuffleEnabled = false
     private set
@@ -447,6 +454,7 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
     pipControls = null
     player.setEventListener(null)
     output?.detach()
+    systemArtwork = null
     player.stop()
     player.release()
     libVlc.release()
@@ -558,6 +566,24 @@ private object SystemMediaControls {
     refresh(candidate)
   }
 
+  fun setArtwork(context: Context, candidate: PlayerSession, artwork: Map<String, String>?) {
+    if (artwork != null) {
+      require(artwork.keys == setOf("uri") && !artwork["uri"].isNullOrBlank()) { "Artwork must contain only a URI" }
+      val uri = Uri.parse(artwork.getValue("uri"))
+      require(uri.scheme.equals("file", true) || uri.scheme.equals("content", true)) { "System artwork must use a local file or content URI" }
+      val decoded = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+        ?: throw IllegalArgumentException("Could not read system artwork image")
+      val scale = minOf(1.0, 640.0 / maxOf(decoded.width, decoded.height))
+      val scaled = if (scale < 1.0) Bitmap.createScaledBitmap(decoded,
+        maxOf(1, (decoded.width * scale).toInt()), maxOf(1, (decoded.height * scale).toInt()), true) else decoded
+      if (scaled !== decoded) decoded.recycle()
+      candidate.systemArtwork = scaled
+    } else {
+      candidate.systemArtwork = null
+    }
+    refresh(candidate)
+  }
+
   fun refresh(candidate: PlayerSession, progressOnly: Boolean = false) {
     if (owner !== candidate) return
     val session = mediaSession ?: return
@@ -586,7 +612,12 @@ private object SystemMediaControls {
     val title = item?.title?.takeIf { it.isNotBlank() } ?: item?.uri?.lastPathSegment ?: "Media"
     val duration = maxOf(candidate.lastDuration, player.length).coerceAtLeast(0)
     session.setMetadata(MediaMetadata.Builder().putString(MediaMetadata.METADATA_KEY_TITLE, title)
-      .putLong(MediaMetadata.METADATA_KEY_DURATION, duration).build())
+      .putLong(MediaMetadata.METADATA_KEY_DURATION, duration).apply {
+        candidate.systemArtwork?.let {
+          putBitmap(MediaMetadata.METADATA_KEY_ART, it)
+          putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it)
+        }
+      }.build())
     val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     if (!player.hasMedia()) { notification = null; if (backgroundOwner == null) manager.cancel(notificationId); return }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) manager.createNotificationChannel(
@@ -600,6 +631,7 @@ private object SystemMediaControls {
     val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(context, channelId) else Notification.Builder(context)
     builder.setSmallIcon(android.R.drawable.ic_media_play).setContentTitle(title).setOnlyAlertOnce(true)
       .setVisibility(Notification.VISIBILITY_PUBLIC)
+    candidate.systemArtwork?.let { builder.setLargeIcon(it) }
     if (candidate.canPrevious()) builder.addAction(action("previous", "Previous", android.R.drawable.ic_media_previous))
     builder.addAction(action(if (playing) "pause" else "play", if (playing) "Pause" else "Play",
       if (playing) R.drawable.expo_summon_vlc_pause else R.drawable.expo_summon_vlc_play_arrow))
@@ -910,6 +942,15 @@ class PlayerView(context: Context, appContext: AppContext) : ExpoView(context, a
     sessionId = null
     appliedScale = null
   }
+
+  fun videoSurface(): SurfaceView? {
+    fun find(view: View): SurfaceView? {
+      if (view is SurfaceView) return view
+      if (view is ViewGroup) for (index in 0 until view.childCount) find(view.getChildAt(index))?.let { return it }
+      return null
+    }
+    return find(output)
+  }
 }
 
 private fun publishPlaybackState(id: String, session: PlayerSession) {
@@ -1115,11 +1156,49 @@ class ExpoSummonVlcModule : Module() {
       if (context == null) promise.reject("ERR_MEDIA_CONTEXT", "React context is unavailable", null)
       else MediaAnalysis.thumbnail(context, id, uri, position, timeout, promise)
     }.runOnQueue(Queues.MAIN)
+    AsyncFunction("captureCurrentFrame") { id: String, promise: Promise ->
+      val session = Sessions.get(id)
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+        promise.reject("ERR_FRAME_CAPTURE_UNSUPPORTED", "Current video frame capture requires Android 8.0 or later", null)
+      } else {
+        val surface = session.output?.videoSurface()
+        if (surface == null || !surface.isShown || surface.width <= 0 || surface.height <= 0) {
+          promise.reject("ERR_FRAME_CAPTURE_UNAVAILABLE", "Attach a visible PlayerView and wait for a video frame before capturing", null)
+        } else {
+          val scale = minOf(1.0, 640.0 / maxOf(surface.width, surface.height))
+          val bitmap = Bitmap.createBitmap(maxOf(1, (surface.width * scale).toInt()), maxOf(1, (surface.height * scale).toInt()), Bitmap.Config.ARGB_8888)
+          PixelCopy.request(surface, bitmap, { result ->
+            if (result != PixelCopy.SUCCESS) {
+              bitmap.recycle()
+              promise.reject("ERR_FRAME_CAPTURE_FAILED", "Could not capture the current video surface (PixelCopy result $result)", null)
+            } else {
+              val context = appContext.reactContext?.applicationContext
+              if (context == null) {
+                bitmap.recycle()
+                promise.reject("ERR_MEDIA_CONTEXT", "React context is unavailable", null)
+              } else try {
+                val file = File(context.cacheDir, "summon-vlc-frame-${UUID.randomUUID()}.jpg")
+                file.outputStream().use { if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 88, it)) throw IllegalStateException("Could not encode captured frame") }
+                promise.resolve(mapOf("uri" to Uri.fromFile(file).toString(), "width" to bitmap.width, "height" to bitmap.height))
+                bitmap.recycle()
+              } catch (error: Exception) {
+                bitmap.recycle()
+                promise.reject("ERR_FRAME_CAPTURE_FAILED", error.message ?: "Could not save captured frame", error)
+              }
+            }
+          }, android.os.Handler(android.os.Looper.getMainLooper()))
+        }
+      }
+    }.runOnQueue(Queues.MAIN)
     AsyncFunction("cancelMediaJob") { id: String -> MediaAnalysis.cancel(id) }.runOnQueue(Queues.MAIN)
 
     AsyncFunction("setControlCenterEnabled") { id: String, enabled: Boolean ->
       val context = appContext.reactContext ?: throw IllegalStateException("React context is unavailable")
       SystemMediaControls.setEnabled(context, Sessions.get(id), enabled)
+    }.runOnQueue(Queues.MAIN)
+    AsyncFunction("setControlCenterArtwork") { id: String, artwork: Map<String, String>? ->
+      val context = appContext.reactContext ?: throw IllegalStateException("React context is unavailable")
+      SystemMediaControls.setArtwork(context, Sessions.get(id), artwork)
     }.runOnQueue(Queues.MAIN)
 
     AsyncFunction("setBackgroundPlaybackEnabled") { id: String, enabled: Boolean ->

@@ -281,6 +281,18 @@ await Player.setControlCenterEnabled(sessionId, false);
 
 System media controls are off by default and support one session at a time. They publish the current title, duration and playback state and handle playback, playlist navigation and seeking when available. Android displays a media notification; its layout depends on the system. Audio interruptions and device route changes are handled independently of this option. Resumption depends on the interruption and system behavior; stopping another music app does not guarantee automatic resume.
 
+Set custom artwork for the iOS Now Playing card or Android MediaSession and notification with a local image URI. Passing `null` clears the override. Without a custom image, iOS uses artwork exposed by VLCKit metadata when available; Android does not automatically extract audio album art.
+
+```ts
+await Player.setControlCenterArtwork(sessionId, { uri: localImageUri });
+const frame = await Player.captureCurrentFrame(sessionId);
+await Player.setControlCenterArtwork(sessionId, { uri: frame.uri });
+// The app owns generated files and should remove them when no longer needed.
+await Player.setControlCenterArtwork(sessionId, null);
+```
+
+`captureCurrentFrame` saves the latest decoded video frame as a temporary JPEG and returns its URI and dimensions. iOS captures the most recently decoded frame; Android captures the visible `PlayerView` surface and requires Android 8.0 or later. On Android, attach a visible `PlayerView` and wait for a video frame first. It is not available for audio-only playback or when the view is detached. The generated image file belongs to the caller. The same `{ uri }` input works with `setControlCenterArtwork` for extracted album art, captured frames, or a poster image.
+
 To retain a session for background playback and reconnect while the app process remains alive, load media and enable background playback while the app is visible. This also enables system media controls:
 
 ```ts

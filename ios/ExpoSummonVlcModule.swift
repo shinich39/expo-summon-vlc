@@ -58,6 +58,7 @@ private final class PlayerSession: NSObject {
   var muted = false
   var audioDelayMillis: Int64 = 0
   var audioDelayApplied = false
+  var systemArtwork: UIImage?
   var failurePolicy = "stop" {
     didSet { if oldValue != failurePolicy { rebuildNativeOrder() } }
   }
@@ -651,6 +652,7 @@ private final class PlayerSession: NSObject {
     videoOutput.seekFinished = nil
     videoOutput.tracksChanged = nil
     videoOutput.lengthChanged = nil
+    systemArtwork = nil
     SessionPiP.shared.detach(self)
     output = nil
     let outputToRelease = videoOutput
@@ -765,6 +767,9 @@ private final class ControlCenter {
     ]
     if duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = Double(duration) / 1000 }
     if let artist = media?.metaData.artist, !artist.isEmpty { info[MPMediaItemPropertyArtist] = artist }
+    if let artwork = candidate.systemArtwork ?? media?.metaData.artwork {
+      info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artwork.size) { _ in artwork }
+    }
     MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     let commands = MPRemoteCommandCenter.shared()
     commands.playCommand.isEnabled = true
@@ -773,6 +778,18 @@ private final class ControlCenter {
     commands.nextTrackCommand.isEnabled = candidate.canNext
     commands.previousTrackCommand.isEnabled = candidate.canPrevious
     commands.changePlaybackPositionCommand.isEnabled = candidate.player.isSeekable
+  }
+
+  func setArtwork(_ uri: String?, session candidate: PlayerSession) throws {
+    if let uri {
+      guard let url = URL(string: uri), url.isFileURL, let image = UIImage(contentsOfFile: url.path) else {
+        throw NSError(domain: "ExpoSummonVlc.Artwork", code: 1, userInfo: [NSLocalizedDescriptionKey: "System artwork must be a readable local image file URI"])
+      }
+      candidate.systemArtwork = image
+    } else {
+      candidate.systemArtwork = nil
+    }
+    refresh(candidate)
   }
 
   func clear(_ candidate: PlayerSession? = nil) {
@@ -1594,6 +1611,16 @@ public class ExpoSummonVlcModule: Module {
     AsyncFunction("extractAlbumArt") { (id: String, uri: String, timeout: Int, promise: Promise) in
       MediaAnalysis.shared.extractAlbumArt(id: id, uri: uri, timeout: timeout, promise: promise)
     }.runOnQueue(.main)
+    AsyncFunction("captureCurrentFrame") { (id: String) throws -> [String: Any] in
+      let session = try Sessions.get(id)
+      guard let jpeg = session.frames.snapshotJPEG(), let image = UIImage(data: jpeg) else {
+        throw NSError(domain: "ExpoSummonVlc.Frame", code: 1, userInfo: [NSLocalizedDescriptionKey: "No decoded video frame is available yet"])
+      }
+      let url = FileManager.default.temporaryDirectory.appendingPathComponent("summon-vlc-frame-\(UUID().uuidString).jpg")
+      do { try jpeg.write(to: url, options: .atomic) }
+      catch { throw NSError(domain: "ExpoSummonVlc.Frame", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not save the captured video frame"]) }
+      return ["uri": url.absoluteString, "width": Int(image.size.width * image.scale), "height": Int(image.size.height * image.scale)]
+    }.runOnQueue(.main)
     AsyncFunction("generateThumbnail") { (id: String, uri: String, position: Double, timeout: Int, promise: Promise) in
       MediaAnalysis.shared.thumbnail(id: id, uri: uri, position: position, timeout: timeout, promise: promise)
     }.runOnQueue(.main)
@@ -1735,6 +1762,18 @@ public class ExpoSummonVlcModule: Module {
     AsyncFunction("setControlCenterEnabled") { (id: String, enabled: Bool) in
       try ControlCenter.shared.setEnabled(enabled, session: Sessions.get(id))
       if !enabled && Sessions.backgroundSessionID == id { Sessions.backgroundSessionID = nil }
+    }.runOnQueue(.main)
+    AsyncFunction("setControlCenterArtwork") { (id: String, artwork: [String: String]?) in
+      let uri: String?
+      if let artwork {
+        guard Set(artwork.keys) == ["uri"], let value = artwork["uri"], !value.isEmpty else {
+          throw NSError(domain: "ExpoSummonVlc.Artwork", code: 2, userInfo: [NSLocalizedDescriptionKey: "Artwork must be null or an object containing only a URI"])
+        }
+        uri = value
+      } else {
+        uri = nil
+      }
+      try ControlCenter.shared.setArtwork(uri, session: Sessions.get(id))
     }.runOnQueue(.main)
 
     AsyncFunction("setBackgroundPlaybackEnabled") { (id: String, enabled: Bool) in

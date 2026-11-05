@@ -110,6 +110,30 @@ static void ESDisplay(void *opaque, void *picture) {
     atomic_store_explicit(&self->_pending, false, memory_order_release);
   });
 }
+- (NSData *)snapshotJPEG {
+  ESFrameContext *ctx = _context;
+  if (!ctx || !atomic_load_explicit(&_running, memory_order_acquire)) return nil;
+  pthread_mutex_lock(&ctx->mutex);
+  unsigned width = ctx->width, height = ctx->height, pitch = ctx->pitch;
+  NSMutableData *bytes = width && height && ctx->pixels ? [NSMutableData dataWithLength:(size_t)width * height * 4] : nil;
+  if (bytes) {
+    uint8_t *destination = bytes.mutableBytes;
+    for (unsigned row = 0; row < height; row++) memcpy(destination + (size_t)row * width * 4, ctx->pixels + (size_t)row * pitch, (size_t)width * 4);
+  }
+  pthread_mutex_unlock(&ctx->mutex);
+  if (!bytes) return nil;
+  CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)bytes);
+  if (!provider) return nil;
+  CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+  CGImageRef image = CGImageCreate(width, height, 8, 32, (size_t)width * 4, colorSpace,
+      kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst, provider, NULL, false, kCGRenderingIntentDefault);
+  CGColorSpaceRelease(colorSpace);
+  CGDataProviderRelease(provider);
+  if (!image) return nil;
+  UIImage *frame = [UIImage imageWithCGImage:image];
+  CGImageRelease(image);
+  return UIImageJPEGRepresentation(frame, 0.88);
+}
 - (void)shutdown {
   if (!_context) return;
   atomic_store_explicit(&_running, false, memory_order_release);
