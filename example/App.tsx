@@ -82,6 +82,9 @@ export default function App() {
   const [playlistItems, setPlaylistItems] = useState<PlaylistItem[]>([]);
   const [playlistEditing, setPlaylistEditing] = useState(false);
   const [errorTestResult, setErrorTestResult] = useState<string | null>(null);
+  const [errorScreenTestPhase, setErrorScreenTestPhase] = useState<'idle' | 'initial' | 'waiting-error' | 'error' | 'recovering' | 'recovery'>('idle');
+  const [errorScreenTestResult, setErrorScreenTestResult] = useState<string | null>(null);
+  const [errorScreenBlackConfirmed, setErrorScreenBlackConfirmed] = useState(false);
   const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>({ fontScale: 1.5, textColor: 0xffffff, backgroundColor: 0, backgroundOpacity: 0, outlineColor: 0, outlineWidth: 4, bottomMargin: 30, alignment: -1 });
   const [appliedSubtitleStyle, setAppliedSubtitleStyle] = useState<SubtitleStyle | null>(null);
   const [playback, setPlayback] = useState<PlaybackStatus | null>(null);
@@ -408,7 +411,12 @@ export default function App() {
   useEffect(() => {
     if (!sessionId) return;
     const subscription = Player.addListener('onPlaybackStateChange', (event) => {
-      if (event.sessionId === sessionId) record(`#${event.sequence} ${event.currentItemId ?? 'no item'}: ${event.state}`);
+      if (event.sessionId !== sessionId) return;
+      record(`#${event.sequence} ${event.currentItemId ?? 'no item'}: ${event.state}`);
+      if (event.currentItemId === 'error-screen-test-recovery' && event.state === 'playing') {
+        setErrorScreenTestPhase('recovery');
+        setMessage('Recovery playback started. Confirm that the video picture returned.');
+      }
     });
     const errors = Player.addListener('onPlaybackError', (event) => {
       if (event.sessionId === sessionId) {
@@ -416,6 +424,11 @@ export default function App() {
         if (event.currentItemId?.startsWith('error-test-')) {
           setErrorTestResult(`#${event.sequence} · ${event.currentItemId} · ${event.code}: ${event.message}`);
           console.log('Playback error test:', event);
+        }
+        if (event.currentItemId === 'error-screen-test-failing') {
+          setErrorScreenTestPhase('error');
+          setMessage(`Error-screen test: ${event.code}. Check whether the video area is black.`);
+          setErrorScreenTestResult(`${event.code} received. Check the player view for the black error screen.`);
         }
       }
     });
@@ -509,6 +522,78 @@ export default function App() {
       setErrorTestResult(result);
       setMessage(result);
     } finally { setBusy(false); }
+  }
+
+  async function startErrorScreenTest() {
+    if (!sessionId || !probeUri || busy || sessionBusy || playlistEditing || analysisBusy || pipMode) return;
+    setBusy(true);
+    setReady(false);
+    setAudioOnly(false);
+    setErrorScreenTestPhase('idle');
+    setErrorScreenTestResult(null);
+    setErrorScreenBlackConfirmed(false);
+    pendingSeek.current = null;
+    setPreview(null);
+    try {
+      const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const missing = new File(Paths.cache, `missing-error-screen-${token}.mp4`);
+      const initialUri = playlistItems.find((item) => item.id === 'item-2')?.uri ?? probeUri;
+      const recoveryUri = probeUri;
+      const items: PlaylistItem[] = [
+        { id: 'error-screen-test-initial', uri: initialUri, title: 'Video before failure' },
+        { id: 'error-screen-test-failing', uri: missing.uri, title: 'Missing video' },
+        { id: 'error-screen-test-recovery', uri: recoveryUri, title: 'Recovery video' },
+      ];
+      await Player.stop(sessionId);
+      await Player.setFailurePolicy(sessionId, 'stop');
+      await Player.setRepeatMode(sessionId, 'off');
+      await Player.setShuffleEnabled(sessionId, false);
+      await Player.setPlaylistItems(sessionId, items);
+      setPlaylistItems(await Player.getPlaylist(sessionId));
+      setPlaylistSize(items.length);
+      await Player.selectItem(sessionId, items[0].id);
+      setReady(true);
+      setErrorScreenTestPhase('initial');
+      setMessage('Error-screen test: wait until the first video is visible, then trigger the failing next item.');
+    } catch (error) {
+      setErrorScreenTestPhase('idle');
+      setErrorScreenTestResult(`Could not start error-screen test: ${String(error)}`);
+      setMessage(`Error-screen test: ${String(error)}`);
+    } finally { setBusy(false); }
+  }
+
+  async function triggerErrorScreenFailure() {
+    if (!sessionId || errorScreenTestPhase !== 'initial' || busy) return;
+    setBusy(true);
+    setErrorScreenTestPhase('waiting-error');
+    setMessage('Error-screen test: requesting the missing next item…');
+    try { await Player.next(sessionId); }
+    catch (error) {
+      setErrorScreenTestResult(`Next command failed before playback: ${String(error)}`);
+      setMessage(`Error-screen test: ${String(error)}`);
+    } finally { setBusy(false); }
+  }
+
+  async function recoverErrorScreenTest() {
+    if (!sessionId || errorScreenTestPhase !== 'error' || busy) return;
+    setBusy(true);
+    setErrorScreenTestPhase('recovering');
+    setMessage('Error-screen test: selecting the recovery video…');
+    try { await Player.selectItem(sessionId, 'error-screen-test-recovery'); }
+    catch (error) {
+      setErrorScreenTestResult(`Recovery command failed: ${String(error)}`);
+      setMessage(`Error-screen test: ${String(error)}`);
+    } finally { setBusy(false); }
+  }
+
+  function finishErrorScreenTest(passed: boolean) {
+    const didPass = passed && errorScreenBlackConfirmed;
+    const result = didPass
+      ? 'PASS: The view was black after the failed item, then showed video after recovery.'
+      : 'FAIL: The black error screen or recovery picture did not match the expected behavior.';
+    setErrorScreenTestResult(result);
+    setErrorScreenTestPhase('idle');
+    setMessage(result);
   }
 
   async function testTransitionMismatch() {
@@ -1115,6 +1200,27 @@ export default function App() {
         </View>}
         <Button title="Test transition mismatch" disabled={!sessionId || !probeUri || sessionBusy || busy || playlistEditing || probeActive || analysisBusy || pipMode} onPress={() => void testTransitionMismatch()} />
         <Button title="Test playback error" disabled={!sessionId || sessionBusy || busy || playlistEditing || probeActive || analysisBusy || (Platform.OS === 'android' && pipMode)} onPress={() => void testPlaybackError()} />
+        <Text style={styles.heading}>Error screen test</Text>
+        <Text>Starts a local video, advances to a missing file, then lets you check the black screen and recovery.</Text>
+        <Button title="Start error screen test" disabled={!sessionId || !probeUri || sessionBusy || busy || playlistEditing || probeActive || analysisBusy || pipMode} onPress={() => void startErrorScreenTest()} />
+        {errorScreenTestPhase === 'initial' && <Button title="Next: trigger missing-file error" disabled={busy} onPress={() => void triggerErrorScreenFailure()} />}
+        {errorScreenTestPhase === 'waiting-error' && <Text>Waiting for the missing item playback error…</Text>}
+        {errorScreenTestPhase === 'error' && <View>
+          <Text>Is the player view black while playback is in error?</Text>
+          <View style={styles.controls}>
+            <Button title="Black confirmed; recover" disabled={busy} onPress={() => { setErrorScreenBlackConfirmed(true); setErrorScreenTestResult('Black screen confirmed after the playback error. Checking recovery…'); void recoverErrorScreenTest(); }} />
+            <Button title="Black screen missing" disabled={busy} onPress={() => { setErrorScreenBlackConfirmed(false); setErrorScreenTestResult('FAIL: The player view was not black after the playback error. You can still test recovery.'); }} />
+          </View>
+        </View>}
+        {errorScreenTestPhase === 'recovering' && <Text>Waiting for recovery video playback…</Text>}
+        {errorScreenTestPhase === 'recovery' && <View>
+          <Text>Has the recovery video picture returned?</Text>
+          <View style={styles.controls}>
+            <Button title="Video returned: Pass" onPress={() => finishErrorScreenTest(true)} />
+            <Button title="Still black: Fail" onPress={() => finishErrorScreenTest(false)} />
+          </View>
+        </View>}
+        {errorScreenTestResult && <Text selectable>{errorScreenTestResult}</Text>}
         <View style={styles.controls}>
           <Button title="Test skip failure" disabled={!sessionId || !probeUri || sessionBusy || busy || playlistEditing || probeActive || analysisBusy || (Platform.OS === 'android' && pipMode)} onPress={() => void testFailureSkip(false)} />
           <Button title="Test all fail" disabled={!sessionId || sessionBusy || busy || playlistEditing || probeActive || analysisBusy || (Platform.OS === 'android' && pipMode)} onPress={() => void testFailureSkip(true)} />

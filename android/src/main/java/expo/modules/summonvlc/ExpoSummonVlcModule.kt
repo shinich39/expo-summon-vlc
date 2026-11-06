@@ -172,6 +172,10 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
   var audioDelayMillis = 0L
   var audioDelayApplied = false
   var systemArtwork: Bitmap? = null
+  var playbackErrorCoverActive = false
+    private set
+  private var recoveryVideoOutputPending = false
+  private var videoOutputAvailable = false
   var repeatMode = "off"
   var shuffleEnabled = false
     private set
@@ -214,6 +218,7 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
     focusInterrupted = false
   }
   fun playPlayback() {
+    armErrorCoverRecovery()
     requestAudioFocus()
     playbackFailed = false
     resumeOnFocus = false
@@ -280,6 +285,37 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
   fun currentItemId(): String? = playlistItems.getOrNull(currentIndex)?.id
   fun playbackError(): Map<String, String>? = if (state() == "error")
     mapOf("code" to "PLAYBACK_FAILED", "message" to "The media player reported a playback error.") else null
+
+  fun showPlaybackErrorCover() {
+    playbackErrorCoverActive = true
+    recoveryVideoOutputPending = false
+    output?.setPlaybackErrorCover(true)
+  }
+
+  private fun armErrorCoverRecovery() {
+    if (playbackErrorCoverActive) recoveryVideoOutputPending = true
+  }
+
+  fun onVideoOutputCountChanged(count: Int) {
+    videoOutputAvailable = count > 0
+    tryRevealPlaybackErrorCover()
+  }
+
+  fun onPlaybackPlaying() {
+    if (player.currentVideoTrack != null) videoOutputAvailable = true
+    tryRevealPlaybackErrorCover()
+  }
+
+  fun tryRevealPlaybackErrorCover() {
+    if (!playbackErrorCoverActive || !recoveryVideoOutputPending || !player.isPlaying || player.time <= 0) return
+    if (player.currentVideoTrack == null || videoOutputAvailable) hidePlaybackErrorCover()
+  }
+
+  private fun hidePlaybackErrorCover() {
+    playbackErrorCoverActive = false
+    recoveryVideoOutputPending = false
+    output?.setPlaybackErrorCover(false)
+  }
 
   fun preparePlaylistReplacement() {
     playbackFailed = false
@@ -366,6 +402,8 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
 
   fun select(index: Int, record: Boolean = true, preservingFailures: Boolean = false) {
     require(index in playlist.indices) { "No playlist item in that direction" }
+    armErrorCoverRecovery()
+    videoOutputAvailable = false
     requestAudioFocus()
     playbackFailed = false
     if (!preservingFailures) failedItems.clear()
@@ -829,6 +867,7 @@ class PlayerView(context: Context, appContext: AppContext) : ExpoView(context, a
   private val transitionPlaceholder = View(context)
   private var sessionId: String? = null
   private var transitionPending = false
+  private var errorCoverActive = false
   private var transitionAspectRatio: Double? = null
   private val transitionFallback = Runnable {
     if (transitionPending) {
@@ -857,6 +896,8 @@ class PlayerView(context: Context, appContext: AppContext) : ExpoView(context, a
     sessionId = id
     session.output = this
     session.player.attachViews(output, null, false, false)
+    errorCoverActive = session.playbackErrorCoverActive
+    updatePlaceholderVisibility()
     updateVideoScale()
   }
 
@@ -883,7 +924,7 @@ class PlayerView(context: Context, appContext: AppContext) : ExpoView(context, a
     output.removeCallbacks(transitionFallback)
     transitionPending = true
     transitionAspectRatio = null
-    transitionPlaceholder.visibility = View.VISIBLE
+    updatePlaceholderVisibility()
     // Insets or an app-managed layout can prevent the output ratio matching the video ratio.
     output.postDelayed(transitionFallback, 1000)
   }
@@ -898,7 +939,16 @@ class PlayerView(context: Context, appContext: AppContext) : ExpoView(context, a
     output.removeCallbacks(transitionFallback)
     transitionPending = false
     transitionAspectRatio = null
-    transitionPlaceholder.visibility = View.GONE
+    updatePlaceholderVisibility()
+  }
+
+  fun setPlaybackErrorCover(visible: Boolean) {
+    errorCoverActive = visible
+    updatePlaceholderVisibility()
+  }
+
+  private fun updatePlaceholderVisibility() {
+    transitionPlaceholder.visibility = if (transitionPending || errorCoverActive) View.VISIBLE else View.GONE
   }
 
   override fun onConfigurationChanged(newConfig: Configuration) {
@@ -941,6 +991,9 @@ class PlayerView(context: Context, appContext: AppContext) : ExpoView(context, a
     }
     sessionId = null
     appliedScale = null
+    transitionPending = false
+    errorCoverActive = false
+    updatePlaceholderVisibility()
   }
 
   fun videoSurface(): SurfaceView? {
@@ -1041,6 +1094,8 @@ class ExpoSummonVlcModule : Module() {
           eventType == MediaPlayer.Event.Vout) {
         android.os.Handler(android.os.Looper.getMainLooper()).post {
           if (Sessions.items[id] === session && session.generation == generation) {
+            if (eventType == MediaPlayer.Event.Vout) session.onVideoOutputCountChanged(event.voutCount)
+            if (eventType == MediaPlayer.Event.TimeChanged) session.tryRevealPlaybackErrorCover()
             session.applyPendingSeek()
             if (eventType == MediaPlayer.Event.LengthChanged || eventType == MediaPlayer.Event.SeekableChanged) SystemMediaControls.refresh(session)
             if (eventType == MediaPlayer.Event.TimeChanged && !session.transitionPending && session.player.isPlaying && session.player.time >= 1000) session.resetFailures()
@@ -1059,9 +1114,11 @@ class ExpoSummonVlcModule : Module() {
             if (eventType == MediaPlayer.Event.EncounteredError) {
               session.playbackFailed = true
               session.autoAdvanceArmed = false
+              session.showPlaybackErrorCover()
             }
             if (eventType == MediaPlayer.Event.EncounteredError || eventType == MediaPlayer.Event.Playing || eventType == MediaPlayer.Event.Paused) session.transitionPending = false
             if (eventType == MediaPlayer.Event.Playing && !session.enforceAudioFocusOnPlayback()) return@post
+            if (eventType == MediaPlayer.Event.Playing) session.onPlaybackPlaying()
             if (eventType == MediaPlayer.Event.Playing && !session.audioDelayApplied) {
               session.audioDelayApplied = session.player.setAudioDelay(session.audioDelayMillis * 1000)
             }

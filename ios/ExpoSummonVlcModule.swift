@@ -59,6 +59,8 @@ private final class PlayerSession: NSObject {
   var audioDelayMillis: Int64 = 0
   var audioDelayApplied = false
   var systemArtwork: UIImage?
+  private var playbackErrorCoverVisible = false
+  private var recoveryFramePending = false
   var failurePolicy = "stop" {
     didSet { if oldValue != failurePolicy { rebuildNativeOrder() } }
   }
@@ -93,6 +95,7 @@ private final class PlayerSession: NSObject {
     self.videoOutput = videoOutput
     self.frames = frames
     super.init()
+    frames.framePresented = { [weak self] in self?.didPresentFrameAfterRecovery() }
     videoOutput.mediaChanged = { [weak self] media in self?.mediaChanged(media) }
     videoOutput.stateChanged = { [weak self] failed, media in self?.mediaPlayerStateChanged(failed: failed, media: media) }
     videoOutput.lengthChanged = { [weak self] length in self?.mediaPlayerLengthChanged(length) }
@@ -524,6 +527,7 @@ private final class PlayerSession: NSObject {
       throw NSError(domain: "ExpoSummonVlc", code: 4, userInfo: [NSLocalizedDescriptionKey: "No playlist item in that direction"])
     }
     try activateAudio()
+    armErrorCoverRecovery()
     if !preservingFailures { failedItems.removeAll() }
     trackRevision = UUID().uuidString
     resumeAfterInterruption = false
@@ -552,6 +556,7 @@ private final class PlayerSession: NSObject {
   func setPlaying(_ playing: Bool) {
     if !playing { resumeAfterInterruption = false }
     if playing {
+      armErrorCoverRecovery()
       do { try activateAudio() }
       catch { onStateChange?(); return }
     }
@@ -562,6 +567,21 @@ private final class PlayerSession: NSObject {
     if playing {
       if state == "ended" { try? seek(to: 0) } else { player.play() }
     } else if player.isPlaying { player.pause() }
+  }
+  func showPlaybackErrorCover() {
+    playbackErrorCoverVisible = true
+    recoveryFramePending = false
+    frames.clearDisplayedFrame()
+  }
+
+  private func armErrorCoverRecovery() {
+    if playbackErrorCoverVisible { recoveryFramePending = true }
+  }
+
+  private func didPresentFrameAfterRecovery() {
+    guard playbackErrorCoverVisible, recoveryFramePending else { return }
+    recoveryFramePending = false
+    playbackErrorCoverVisible = false
   }
   func playFromAPI() throws {
     try activateAudio()
@@ -1512,6 +1532,7 @@ public class ExpoSummonVlcModule: Module {
             if session.eventsAttached { self?.sendEvent("onPlaybackError", errorEvent) }
           }
         }
+        if state == "error" { session.showPlaybackErrorCover() }
         session.handlePlaybackState(state)
         if state == "error" { session.handlePlaybackFailure() }
         SessionPiP.shared.playbackChanged(session)

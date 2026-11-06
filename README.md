@@ -186,6 +186,8 @@ Changing the timeout does not alter an ongoing transition. Android does not use 
 
 Repeat-one applies to automatic playback, while manual next and previous use playlist navigation. Shuffle keeps navigation history. `setFailurePolicy(sessionId, 'skip')` attempts another eligible item after a playback error; the default is `'stop'`. A run of consecutive failures is bounded so that a repeat-all list of failing items does not loop indefinitely.
 
+When video playback enters an error state, the native output hides the retained last frame with black. Successful playlist transitions are unchanged. The black screen stays until a later playback attempt produces video output.
+
 ## Playback status and events
 
 Use `getPlaybackStatus` for a native snapshot and subscribe to events for changes. Filter by session because event listeners receive events from the module:

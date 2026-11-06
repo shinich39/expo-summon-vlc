@@ -59,6 +59,7 @@ static void ESDisplay(void *opaque, void *picture) {
   ESFrameContext *_context;
   atomic_bool _pending;
   atomic_bool _running;
+  atomic_uint_fast64_t _generation;
 }
 - (instancetype)initWithNativePlayer:(void *)nativePlayerPointer {
   if (!(self = [super init])) return nil;
@@ -72,11 +73,13 @@ static void ESDisplay(void *opaque, void *picture) {
   _displayLayer.videoGravity = AVLayerVideoGravityResizeAspect;
   atomic_init(&_pending, false);
   atomic_init(&_running, true);
+  atomic_init(&_generation, 0);
   libvlc_video_set_callbacks(nativePlayer, ESLock, ESUnlock, ESDisplay, _context);
   libvlc_video_set_format_callbacks(nativePlayer, ESFormat, ESCleanup);
   return self;
 }
 - (void)present:(ESFrameContext *)ctx {
+  uint64_t generation = atomic_load_explicit(&_generation, memory_order_acquire);
   if (!atomic_load_explicit(&_running, memory_order_acquire) || atomic_exchange_explicit(&_pending, true, memory_order_acq_rel)) return;
   CVPixelBufferRef pixel = NULL;
   pthread_mutex_lock(&ctx->mutex);
@@ -102,13 +105,41 @@ static void ESDisplay(void *opaque, void *picture) {
   CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sample, true);
   if (attachments && CFArrayGetCount(attachments)) CFDictionarySetValue((CFMutableDictionaryRef)CFArrayGetValueAtIndex(attachments, 0), kCMSampleAttachmentKey_DisplayImmediately, kCFBooleanTrue);
   dispatch_async(dispatch_get_main_queue(), ^{
-    if (atomic_load_explicit(&self->_running, memory_order_acquire)) {
+    BOOL presented = NO;
+    if (atomic_load_explicit(&self->_running, memory_order_acquire) &&
+        generation == atomic_load_explicit(&self->_generation, memory_order_acquire)) {
       if (self->_displayLayer.status == AVQueuedSampleBufferRenderingStatusFailed) [self->_displayLayer flush];
-      if (self->_displayLayer.readyForMoreMediaData) [self->_displayLayer enqueueSampleBuffer:sample];
+      if (self->_displayLayer.readyForMoreMediaData) {
+        [self->_displayLayer enqueueSampleBuffer:sample];
+        presented = YES;
+      }
     }
     CFRelease(sample);
     atomic_store_explicit(&self->_pending, false, memory_order_release);
+    if (presented && self.framePresented) self.framePresented();
   });
+}
+- (void)clearDisplayedFrame {
+  if (!atomic_load_explicit(&_running, memory_order_acquire)) return;
+  atomic_fetch_add_explicit(&_generation, 1, memory_order_acq_rel);
+  ESFrameContext *ctx = _context;
+  if (ctx && ctx->pixels) {
+    pthread_mutex_lock(&ctx->mutex);
+    for (unsigned row = 0; row < ctx->height; row++) {
+      uint8_t *pixels = ctx->pixels + (size_t)row * ctx->pitch;
+      memset(pixels, 0, (size_t)ctx->width * 4);
+      for (unsigned column = 0; column < ctx->width; column++) pixels[column * 4 + 3] = 0xff;
+    }
+    pthread_mutex_unlock(&ctx->mutex);
+  }
+  void (^clear)(void) = ^{
+    if (!atomic_load_explicit(&self->_running, memory_order_acquire)) return;
+    self->_displayLayer.backgroundColor = UIColor.blackColor.CGColor;
+    self->_displayLayer.opaque = YES;
+    [self->_displayLayer flushAndRemoveImage];
+  };
+  if ([NSThread isMainThread]) clear();
+  else dispatch_async(dispatch_get_main_queue(), clear);
 }
 - (NSData *)snapshotJPEG {
   ESFrameContext *ctx = _context;
@@ -143,6 +174,7 @@ static void ESDisplay(void *opaque, void *picture) {
   pthread_mutex_destroy(&_context->mutex);
   free(_context);
   _context = NULL;
+  self.framePresented = nil;
   [_displayLayer flushAndRemoveImage];
 }
 @end
