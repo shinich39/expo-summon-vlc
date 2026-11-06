@@ -160,6 +160,7 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
   var onPlaylistEdited: (() -> Unit)? = null
   var lastDuration = 0L
   var pendingSeek: Long? = null
+  var pauseAfterPendingSeek = false
   @Volatile var generation = 0L
   var autoAdvanceArmed = false
   var playbackFailed = false
@@ -267,8 +268,19 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
   fun applyPendingSeek() {
     val target = pendingSeek ?: return
     if (!player.isSeekable || player.length <= 0 || (state() != "playing" && state() != "paused")) return
+    if (pauseAfterPendingSeek) {
+      if (state() != "paused") {
+        autoAdvanceArmed = false
+        pausePlayback()
+        return
+      }
+    }
     pendingSeek = null
     player.setTime(target.coerceAtMost(player.length - 1))
+    if (pauseAfterPendingSeek) {
+      autoAdvanceArmed = false
+      pauseAfterPendingSeek = false
+    }
   }
 
   fun state(): String = if (playbackFailed) "error" else when (player.playerState) {
@@ -325,6 +337,7 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
     generation++
     autoAdvanceArmed = false
     pendingSeek = null
+    pauseAfterPendingSeek = false
     lastDuration = 0
     videoAspectRatio = null
     player.stop()
@@ -353,6 +366,7 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
       playbackFailed = false
       autoAdvanceArmed = false
       pendingSeek = null
+      pauseAfterPendingSeek = false
       player.stop()
       lastDuration = 0
       videoAspectRatio = null
@@ -413,6 +427,7 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
     if (record && shuffleEnabled) recordSelection(index)
     generation++
     autoAdvanceArmed = false
+    pauseAfterPendingSeek = false
     if (index == currentIndex && state() == "ended") {
       pendingSeek = 0
       player.play()
@@ -422,6 +437,7 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
     if (pipControls?.isActive() == true) output?.beginPictureInPictureTransition()
     player.stop()
     pendingSeek = null
+    pauseAfterPendingSeek = false
     lastDuration = 0
     videoAspectRatio = null
     lastVideoTrackCheck = 0
@@ -1088,7 +1104,7 @@ class ExpoSummonVlcModule : Module() {
     session.player.setEventListener { event ->
       val eventType = event.type
       val generation = session.generation
-      if (eventType == MediaPlayer.Event.SeekableChanged || eventType == MediaPlayer.Event.Playing ||
+      if (eventType == MediaPlayer.Event.SeekableChanged || eventType == MediaPlayer.Event.Playing || eventType == MediaPlayer.Event.Paused ||
           eventType == MediaPlayer.Event.TimeChanged || eventType == MediaPlayer.Event.LengthChanged ||
           eventType == MediaPlayer.Event.ESAdded || eventType == MediaPlayer.Event.ESDeleted || eventType == MediaPlayer.Event.ESSelected ||
           eventType == MediaPlayer.Event.Vout) {
@@ -1126,7 +1142,7 @@ class ExpoSummonVlcModule : Module() {
             if (state == "error") { session.output?.cancelPictureInPictureTransition(); session.clearAudioFocus() }
             publishPlaybackState(id, session)
             if (eventType == MediaPlayer.Event.Playing && state == "playing") {
-              session.autoAdvanceArmed = session.currentIndex in session.playlist.indices
+              session.autoAdvanceArmed = !session.pauseAfterPendingSeek && session.currentIndex in session.playlist.indices
             } else if (eventType == MediaPlayer.Event.EncounteredError && state == "error") {
               runCatching { session.handlePlaybackFailure() }
               if (!session.transitionPending && finishBackgroundPlayback(id, session)) return@post
@@ -1327,6 +1343,7 @@ class ExpoSummonVlcModule : Module() {
       session.autoAdvanceArmed = false
       session.player.stop()
       session.pendingSeek = null
+      session.pauseAfterPendingSeek = false
       session.lastDuration = 0
       session.videoAspectRatio = null
       session.playlist = emptyList()
@@ -1539,6 +1556,8 @@ class ExpoSummonVlcModule : Module() {
       val target = millis.coerceAtMost((duration - 1).toDouble()).toLong()
       if (session.state() == "ended") {
         session.pendingSeek = target
+        session.pauseAfterPendingSeek = true
+        session.autoAdvanceArmed = false
         session.playPlayback()
         session.applyPendingSeek()
       } else {
@@ -1561,6 +1580,7 @@ class ExpoSummonVlcModule : Module() {
       session.generation++
       session.autoAdvanceArmed = false
       session.pendingSeek = null
+      session.pauseAfterPendingSeek = false
       session.player.stop()
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("release") { id: String ->

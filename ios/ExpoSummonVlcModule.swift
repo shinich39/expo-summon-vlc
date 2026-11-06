@@ -52,6 +52,7 @@ private final class PlayerSession: NSObject {
   var lastDuration: Int32 = 0
   var pendingSeek: Double?
   var pendingSeekFast = true
+  var pauseAfterPendingSeek = false
   var autoAdvanceArmed = false
   var playbackRate: Double = 1
   var volume: Int = 100
@@ -361,6 +362,13 @@ private final class PlayerSession: NSObject {
   func applyPendingSeek() {
     guard !releaseInProgress else { return }
     guard let target = pendingSeek, videoOutput.nativeIsSeekable(), state == "playing" || state == "paused" else { return }
+    if pauseAfterPendingSeek {
+      guard state == "paused" else {
+        autoAdvanceArmed = false
+        if player.isPlaying { player.pause() }
+        return
+      }
+    }
     let duration = player.durationMillis
     guard duration > 0 else { return }
     let fast = pendingSeekFast
@@ -368,6 +376,10 @@ private final class PlayerSession: NSObject {
     if videoOutput.seek(toMillis: millis, fast: fast) {
       pendingSeek = nil
       pendingSeekFast = true
+      if pauseAfterPendingSeek {
+        autoAdvanceArmed = false
+        pauseAfterPendingSeek = false
+      }
     }
   }
 
@@ -384,6 +396,8 @@ private final class PlayerSession: NSObject {
       try activateAudio()
       pendingSeek = target
       pendingSeekFast = fast
+      pauseAfterPendingSeek = true
+      autoAdvanceArmed = false
       player.play()
       applyPendingSeek()
     } else {
@@ -421,6 +435,7 @@ private final class PlayerSession: NSObject {
 
   func cancelTransition() {
     pendingSeek = nil
+    pauseAfterPendingSeek = false
     transitionToken += 1
     transitionPhase = nil
     pendingSelection = nil
@@ -534,6 +549,7 @@ private final class PlayerSession: NSObject {
     let wasEnded = player.state == .stopped && currentIndex == index
     if record && shuffleEnabled { recordSelection(index) }
     pauseAfterTransition = false
+    pauseAfterPendingSeek = false
     autoAdvanceArmed = false
     if !transitionFailed && transitionPhase == nil && index == currentIndex && wasEnded {
       pendingSeek = 0
@@ -622,6 +638,14 @@ private final class PlayerSession: NSObject {
 
   func handlePlaybackState(_ state: String) {
     guard transitionPhase == nil, !transitionFailed else { return }
+    if state == "paused", pauseAfterPendingSeek {
+      autoAdvanceArmed = false
+      return
+    }
+    if state == "playing", pauseAfterPendingSeek {
+      autoAdvanceArmed = false
+      return
+    }
     if state == "playing" {
       autoAdvanceArmed = currentIndex >= 0 && currentIndex < playlist.count
     } else if state == "ended", autoAdvanceArmed, failurePolicy == "skip", repeatMode == "all",
@@ -1674,6 +1698,7 @@ public class ExpoSummonVlcModule: Module {
       session.autoAdvanceArmed = false
       session.player.stop()
       session.pendingSeek = nil
+      session.pauseAfterPendingSeek = false
       session.lastDuration = 0
       session.clearPlaylist()
       guard let media = VLCMedia(url: url) else {
@@ -1944,6 +1969,7 @@ public class ExpoSummonVlcModule: Module {
       session.cancelTransition()
       session.autoAdvanceArmed = false
       session.pendingSeek = nil
+      session.pauseAfterPendingSeek = false
       session.player.stop()
     }.runOnQueue(.main)
     AsyncFunction("release") { (id: String, promise: Promise) in
