@@ -48,6 +48,10 @@ export type PlaybackStatus = {
   audioDelayMillis: number;
   /** Whether VLC accepted the requested offset for the current media. */
   audioDelayApplied: boolean;
+  /** Requested subtitle offset in milliseconds. Positive values delay subtitles. */
+  subtitleDelayMillis: number;
+  /** Whether VLC accepted the requested subtitle offset for the current media. */
+  subtitleDelayApplied: boolean;
   repeatMode: RepeatMode;
   shuffleEnabled: boolean;
   failurePolicy: PlaybackFailurePolicy;
@@ -82,6 +86,18 @@ export type PlaybackTracks = {
 };
 
 export type PlaybackTrackType = 'audio' | 'subtitle';
+
+export type ExternalSubtitleFormat = 'srt' | 'vtt' | 'ass' | 'ssa' | 'smi' | 'sami';
+export type ExternalSubtitleSource = { uri: string } | { content: string; format: ExternalSubtitleFormat };
+export type SubtitleAttachmentStatus = 'attaching' | 'accepted' | 'trackAvailable' | 'selected' | 'failed' | 'timeout';
+export type SubtitleAttachmentEvent = {
+  sessionId: string;
+  requestId: string;
+  currentIndex: number;
+  currentItemId: string | null;
+  status: SubtitleAttachmentStatus;
+  message: string | null;
+};
 
 /** VLC text subtitle preferences applied when a new session is created. */
 export type SubtitleStyle = {

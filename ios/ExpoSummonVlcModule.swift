@@ -26,6 +26,15 @@ private struct PlaylistItem {
   }
 }
 
+private final class SubtitleAttachRequest {
+  let id: String
+  let baseline: Set<String>
+  let itemID: String?
+  var addedTrackID: String?
+  var timeout: Timer?
+  init(id: String, baseline: Set<String>, itemID: String?) { self.id = id; self.baseline = baseline; self.itemID = itemID }
+}
+
 private final class PlayerSession: NSObject {
   let videoOutput: ESVLCSessionOutput
   let frames: ESVLCSessionFrames
@@ -39,6 +48,9 @@ private final class PlayerSession: NSObject {
   var onStateChange: (() -> Void)?
   var onProgress: (() -> Void)?
   var onTracksChange: (() -> Void)?
+  var onSubtitleStatus: ((String, String, String?) -> Void)?
+  private var subtitleRequests: [String: SubtitleAttachRequest] = [:]
+  private var subtitleFiles: [URL] = []
   var onPiPChange: ((Bool, String?) -> Void)?
   var onPiPWillStop: (() -> Void)?
   var eventsAttached = true
@@ -59,6 +71,8 @@ private final class PlayerSession: NSObject {
   var muted = false
   var audioDelayMillis: Int64 = 0
   var audioDelayApplied = false
+  var subtitleDelayMillis: Int64 = 0
+  var subtitleDelayApplied = false
   var systemArtwork: UIImage?
   private var playbackErrorCoverVisible = false
   private var recoveryFramePending = false
@@ -101,7 +115,7 @@ private final class PlayerSession: NSObject {
     videoOutput.stateChanged = { [weak self] failed, media in self?.mediaPlayerStateChanged(failed: failed, media: media) }
     videoOutput.lengthChanged = { [weak self] length in self?.mediaPlayerLengthChanged(length) }
     videoOutput.timeChanged = { [weak self] in self?.mediaPlayerTimeChanged() }
-    videoOutput.tracksChanged = { [weak self] in self?.onTracksChange?() }
+    videoOutput.tracksChanged = { [weak self] in self?.handleSubtitleTrackChanges(); self?.onTracksChange?() }
     videoOutput.seekFinished = { [weak self] in
       guard let self else { return }
       SessionPiP.shared.playbackChanged(self, force: true)
@@ -238,6 +252,7 @@ private final class PlayerSession: NSObject {
       player.stop()
       lastDuration = 0
       audioDelayApplied = false
+      subtitleDelayApplied = false
       trackRevision = UUID().uuidString
     }
     playlistItems = items
@@ -299,6 +314,7 @@ private final class PlayerSession: NSObject {
       trackRevision = UUID().uuidString
     }
     audioDelayApplied = player.setAudioDelay(millis: audioDelayMillis)
+    subtitleDelayApplied = player.setSubtitleDelay(millis: subtitleDelayMillis)
     if isTransitioning {
       transitionReady = true
     } else if index != currentIndex {
@@ -330,6 +346,9 @@ private final class PlayerSession: NSObject {
     }
     if player.isPlaying && !audioDelayApplied {
       audioDelayApplied = player.setAudioDelay(millis: audioDelayMillis)
+    }
+    if player.isPlaying && !subtitleDelayApplied {
+      subtitleDelayApplied = player.setSubtitleDelay(millis: subtitleDelayMillis)
     }
     applyPendingSeek()
     SessionPiP.shared.playbackChanged(self)
@@ -422,6 +441,72 @@ private final class PlayerSession: NSObject {
   }
   var currentItemID: String? {
     playlistItems.indices.contains(currentIndex) ? playlistItems[currentIndex].id : nil
+  }
+  func attachSubtitle(uri: String, requestID: String, timeoutMillis: Double?) throws {
+    guard !requestID.isEmpty, subtitleRequests[requestID] == nil else {
+      throw NSError(domain: "ExpoSummonVlc.Subtitles", code: 3, userInfo: [NSLocalizedDescriptionKey: "Subtitle requestId must be unique and non-empty"])
+    }
+    guard subtitleRequests.isEmpty else {
+      throw NSError(domain: "ExpoSummonVlc.Subtitles", code: 7, userInfo: [NSLocalizedDescriptionKey: "Wait for the pending subtitle attachment to finish"])
+    }
+    guard !isTransitioning, state == "playing" || state == "paused" else {
+      throw NSError(domain: "ExpoSummonVlc.Subtitles", code: 4, userInfo: [NSLocalizedDescriptionKey: "External subtitles require a playing or paused item"])
+    }
+    if let timeoutMillis, (!timeoutMillis.isFinite || timeoutMillis <= 0 || timeoutMillis.rounded() != timeoutMillis) {
+      throw NSError(domain: "ExpoSummonVlc.Subtitles", code: 5, userInfo: [NSLocalizedDescriptionKey: "timeoutMillis must be a positive integer"])
+    }
+    let baseline = Set((videoOutput.tracks(for: "subtitle") ?? []).compactMap { $0["id"] as? String })
+    let request = SubtitleAttachRequest(id: requestID, baseline: baseline, itemID: currentItemID)
+    subtitleRequests[requestID] = request
+    onSubtitleStatus?(requestID, "attaching", nil)
+    guard videoOutput.addSubtitle(uri: uri) else {
+      subtitleRequests.removeValue(forKey: requestID)
+      onSubtitleStatus?(requestID, "failed", "VLC rejected the external subtitle source")
+      return
+    }
+    onSubtitleStatus?(requestID, "accepted", nil)
+    let timeout = timeoutMillis ?? 15_000
+    request.timeout = Timer.scheduledTimer(withTimeInterval: timeout / 1000, repeats: false) { [weak self, weak request] _ in
+      guard let self, let request, self.subtitleRequests[request.id] === request else { return }
+      self.subtitleRequests.removeValue(forKey: request.id)
+      self.onSubtitleStatus?(request.id, "timeout", "No selected subtitle track was reported before the requested timeout")
+    }
+    handleSubtitleTrackChanges()
+  }
+  func retainSubtitleFile(_ url: URL) { subtitleFiles.append(url) }
+  private func handleSubtitleTrackChanges() {
+    guard !subtitleRequests.isEmpty else { return }
+    let tracks = videoOutput.tracks(for: "subtitle") ?? []
+    var selectedRequestIDs: [String] = []
+    var failedRequests: [(String, SubtitleAttachRequest)] = []
+    for (id, request) in subtitleRequests {
+      if currentItemID != request.itemID {
+        request.timeout?.invalidate()
+        failedRequests.append((id, request))
+        continue
+      }
+      let added = tracks.first { ($0["id"] as? String).map { !request.baseline.contains($0) } ?? false }
+      if let added, let trackID = added["id"] as? String {
+        if request.addedTrackID == nil {
+          request.addedTrackID = trackID
+          onSubtitleStatus?(id, "trackAvailable", nil)
+        }
+        if added["selected"] as? Bool == true {
+          request.timeout?.invalidate()
+          selectedRequestIDs.append(id)
+        } else {
+          _ = videoOutput.selectTrack(for: "subtitle", identifier: trackID)
+        }
+      }
+    }
+    for (id, request) in failedRequests where subtitleRequests[id] === request {
+      subtitleRequests.removeValue(forKey: id)
+      onSubtitleStatus?(id, "failed", "The playlist item changed before the subtitle track became available")
+    }
+    for id in selectedRequestIDs {
+      subtitleRequests.removeValue(forKey: id)
+      onSubtitleStatus?(id, "selected", nil)
+    }
   }
   var playbackError: [String: String]? {
     guard state == "error" else { return nil }
@@ -690,6 +775,11 @@ private final class PlayerSession: NSObject {
     onPiPChange = nil
     onPiPWillStop = nil
     onTracksChange = nil
+    onSubtitleStatus = nil
+    subtitleRequests.values.forEach { $0.timeout?.invalidate() }
+    subtitleRequests.removeAll()
+    subtitleFiles.forEach { try? FileManager.default.removeItem(at: $0) }
+    subtitleFiles.removeAll()
     videoOutput.mediaChanged = nil
     videoOutput.stateChanged = nil
     videoOutput.timeChanged = nil
@@ -1570,6 +1660,12 @@ public class ExpoSummonVlcModule: Module {
       guard let session, Sessions.items[id] === session, !session.releaseInProgress else { return }
       if session.eventsAttached { self?.sendEvent("onTracksChanged", ["sessionId": id, "revision": session.trackRevision]) }
     }
+    session.onSubtitleStatus = { [weak self, weak session] requestID, status, message in
+      guard let session, Sessions.items[id] === session, !session.releaseInProgress else { return }
+      if session.eventsAttached { self?.sendEvent("onSubtitleAttachmentStatus", ["sessionId": id, "requestId": requestID,
+        "currentIndex": session.currentIndex, "currentItemId": session.currentItemID as Any? ?? NSNull(), "status": status,
+        "message": message as Any? ?? NSNull()]) }
+    }
     session.onProgress = { [weak self, weak session] in
       guard let session, Sessions.items[id] === session, !session.releaseInProgress else { return }
       if session.eventsAttached { self?.sendEvent("onPlaybackProgress", ["sessionId": id, "currentIndex": session.currentIndex,
@@ -1605,7 +1701,7 @@ public class ExpoSummonVlcModule: Module {
   }
   public func definition() -> ModuleDefinition {
     Name("ExpoSummonVlc")
-    Events("onPlaybackStateChange", "onPlaybackProgress", "onPlaybackError", "onTracksChanged", "onPictureInPictureStateChange", "onPictureInPictureExitTest")
+    Events("onPlaybackStateChange", "onPlaybackProgress", "onPlaybackError", "onTracksChanged", "onSubtitleAttachmentStatus", "onPictureInPictureStateChange", "onPictureInPictureExitTest")
 
     AsyncFunction("startFrameProbe") { (uri: String) in
       guard FrameProbe.current == nil else {
@@ -1875,6 +1971,21 @@ public class ExpoSummonVlcModule: Module {
       session.audioDelayMillis = value
       session.audioDelayApplied = true
     }.runOnQueue(.main)
+    AsyncFunction("setSubtitleDelay") { (id: String, delay: Double) in
+      guard delay.isFinite, delay.rounded() == delay, abs(delay) < Double(Int64.max) / 1000 else {
+        throw NSError(domain: "ExpoSummonVlc", code: 25, userInfo: [NSLocalizedDescriptionKey: "Subtitle delay must be an integer number of milliseconds within the native range"])
+      }
+      let session = try Sessions.get(id)
+      guard session.state == "playing" || session.state == "paused", !session.isTransitioning else {
+        throw NSError(domain: "ExpoSummonVlc", code: 26, userInfo: [NSLocalizedDescriptionKey: "Subtitle delay requires playing or paused media"])
+      }
+      let value = Int64(delay)
+      guard session.player.setSubtitleDelay(millis: value) else {
+        throw NSError(domain: "ExpoSummonVlc", code: 27, userInfo: [NSLocalizedDescriptionKey: "Subtitle delay could not be set"])
+      }
+      session.subtitleDelayMillis = value
+      session.subtitleDelayApplied = true
+    }.runOnQueue(.main)
 
     AsyncFunction("getPlaybackStatus") { (id: String) -> [String: Any] in
       let session = try Sessions.get(id)
@@ -1889,6 +2000,7 @@ public class ExpoSummonVlcModule: Module {
               "durationMillis": max(0, session.lastDuration),
               "playbackRate": session.playbackRate, "volume": Double(session.volume) / 100, "muted": session.muted,
               "audioDelayMillis": session.audioDelayMillis, "audioDelayApplied": session.audioDelayApplied,
+              "subtitleDelayMillis": session.subtitleDelayMillis, "subtitleDelayApplied": session.subtitleDelayApplied,
               "isSeekable": session.videoOutput.nativeIsSeekable() || (session.state == "ended" && session.lastDuration > 0),
               "repeatMode": session.repeatMode, "shuffleEnabled": session.shuffleEnabled,
               "failurePolicy": session.failurePolicy,
@@ -1909,6 +2021,28 @@ public class ExpoSummonVlcModule: Module {
       guard type == "audio" || type == "subtitle", identifier != nil || type == "subtitle" else { throw NSError(domain: "ExpoSummonVlc.Tracks", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid track type or identifier"]) }
       guard !session.isTransitioning, session.state == "playing" || session.state == "paused", revision == session.trackRevision else { throw NSError(domain: "ExpoSummonVlc.Tracks", code: 4, userInfo: [NSLocalizedDescriptionKey: "Track list is stale; refresh it first"]) }
       guard session.videoOutput.selectTrack(for: type, identifier: identifier) else { throw NSError(domain: "ExpoSummonVlc.Tracks", code: 5, userInfo: [NSLocalizedDescriptionKey: "Track is unavailable"]) }
+    }.runOnQueue(.main)
+
+    AsyncFunction("addSubtitle") { (id: String, requestID: String, source: [String: String], timeoutMillis: Double?) in
+      let session = try Sessions.get(id)
+      let uri: String
+      if Set(source.keys) == Set(["uri"]), let value = source["uri"], let parsed = URL(string: value), parsed.scheme != nil {
+        uri = value
+      } else if Set(source.keys) == Set(["content", "format"]), let content = source["content"],
+                let format = source["format"], ["srt", "vtt", "ass", "ssa", "smi", "sami"].contains(format) {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("summon-vlc-subtitle-\(UUID().uuidString).\(format)")
+        do { try Data(content.utf8).write(to: file, options: .atomic) }
+        catch {
+          session.onSubtitleStatus?(requestID, "failed", "Subtitle content could not be saved locally")
+          throw error
+        }
+        session.retainSubtitleFile(file)
+        uri = file.absoluteString
+      } else {
+        session.onSubtitleStatus?(requestID, "failed", "Expected a URI or content with a supported subtitle format")
+        throw NSError(domain: "ExpoSummonVlc.Subtitles", code: 6, userInfo: [NSLocalizedDescriptionKey: "Expected a URI or content with a supported subtitle format"])
+      }
+      try session.attachSubtitle(uri: uri, requestID: requestID, timeoutMillis: timeoutMillis)
     }.runOnQueue(.main)
 
     AsyncFunction("seekTo") { (id: String, millis: Double, options: [String: String]?) in

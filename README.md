@@ -136,6 +136,7 @@ await Player.setPlaybackRate(sessionId, 1.5); // requested range: 0.25–4
 await Player.setVolume(sessionId, 0.5);       // session volume: 0–1
 await Player.setMuted(sessionId, true);
 await Player.setAudioDelay(sessionId, 100);   // milliseconds; positive delays audio
+await Player.setSubtitleDelay(sessionId, -250); // milliseconds; negative advances subtitles
 ```
 
 On iOS, seek precision can be selected per request:
@@ -147,7 +148,7 @@ await Player.seekTo(sessionId, 30_000, { precision: 'precise' });
 
 The position passed to `seekTo` is in milliseconds on both platforms. To seek using a fraction, multiply it by the media duration in milliseconds. The default on iOS is `fast`. Actual seek accuracy and latency depend on the media and VLC. Android uses its existing LibVLC 3 seek behavior; requesting `precise` rejects on Android. For portable code, omit the option on Android or branch on `Platform.OS`.
 
-Playback rate is a request and the effective rate can depend on the media. Volume is independent of device volume; muting preserves the configured session volume. Audio delay accepts values from -10,000 to 10,000 ms and is reapplied on media changes. Check `audioDelayApplied` in the playback status to see whether VLC accepted it.
+Playback rate is a request and the effective rate can depend on the media. Volume is independent of device volume; muting preserves the configured session volume. Audio delay accepts values from -10,000 to 10,000 ms and is reapplied on media changes. Subtitle delay uses milliseconds without an arbitrary range; positive values display subtitles later, while negative values display them earlier. VLC resets subtitle delay on media changes, so the session reapplies it to each item. Check `audioDelayApplied` and `subtitleDelayApplied` in the playback status to see whether VLC accepted the requested offsets.
 
 ## Playlists
 
@@ -249,6 +250,24 @@ const sessionId = await Player.createSessionWithSubtitleStyle({
 ```
 
 Alignment is applied when the session is created to text subtitles handled by VLC’s text subtitle decoder; other subtitle formats may ignore it. Text color is an optional RGB preference and may be overridden by the subtitle format. Subtitle formats with embedded styling and bitmap subtitles may override or ignore preferences. A styled session creates its own VLC instance. `getSubtitleStyleCapabilities()` reports supported operations; `setSubtitleFontScale(sessionId, scale)` changes font scale on iOS only, while other style changes require a new session.
+
+### External subtitles
+
+Attach an external subtitle to the currently playing or paused item by URI, or pass subtitle text with its filename format. Supported input formats are `.srt`, `.vtt`, `.ass`, `.ssa`, `.smi`, and `.sami`:
+
+```ts
+const requestId = `subtitle-${Date.now()}`;
+const subscription = Player.addListener('onSubtitleAttachmentStatus', (event) => {
+  if (event.requestId === requestId) console.log(event.status, event.message);
+});
+
+await Player.addSubtitle(sessionId, requestId, {
+  content: '1\n00:00:01,000 --> 00:00:04,000\nHello\n',
+  format: 'srt',
+}, 10_000); // Optional timeout in milliseconds.
+```
+
+The API also accepts `{ uri }`. Content is written to a temporary file for VLC; the package removes generated temporary files when the session is released. Attach one external subtitle at a time per session, waiting for `selected`, `failed`, or `timeout` before starting another. The timeout defaults to 15 seconds and can be increased as needed. Status events progress through `attaching` and `accepted`; `trackAvailable` means VLC exposed a new subtitle track, and `selected` confirms VLC reports that track as active. `failed` means the source could not be accepted or the item changed before a track appeared, while `timeout` means no selected track appeared before the timeout. `accepted` alone does not guarantee that VLC can parse or display the subtitle. Remove the event subscription when it is no longer needed.
 
 ## Picture in Picture
 

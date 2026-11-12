@@ -93,6 +93,10 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
   private var resumeOnFocus = false
   private var wantsPlayback = false
   private var released = false
+  var id = ""
+  private data class SubtitleAttachRequest(val requestId: String, val baseline: Set<String>, val itemId: String?, var addedTrackId: String? = null, var timeout: Runnable? = null)
+  private val subtitleRequests = linkedMapOf<String, SubtitleAttachRequest>()
+  private val subtitleFiles = mutableListOf<File>()
   private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
     if (!released && focusRequested) when (change) {
       AudioManager.AUDIOFOCUS_LOSS -> {
@@ -139,6 +143,59 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
   var progressSequence = 0L
   var onProgress: (() -> Unit)? = null
   var onEvent: ((String, Map<String, Any?>) -> Unit)? = null
+  private fun emitSubtitleStatus(requestId: String, status: String, message: String? = null) {
+    onEvent?.invoke("onSubtitleAttachmentStatus", mapOf("sessionId" to id, "requestId" to requestId,
+      "currentIndex" to currentIndex, "currentItemId" to currentItemId(), "status" to status, "message" to message))
+  }
+  fun attachSubtitle(uri: String, requestId: String, timeoutMillis: Long?) {
+    require(requestId.isNotBlank() && requestId !in subtitleRequests) { "Subtitle requestId must be unique and non-empty" }
+    check(subtitleRequests.isEmpty()) { "Wait for the pending subtitle attachment to finish" }
+    check(!transitionPending && (state() == "playing" || state() == "paused")) { "External subtitles require a playing or paused item" }
+    require(timeoutMillis == null || timeoutMillis > 0) { "timeoutMillis must be a positive integer" }
+    val baseline = (player.spuTracks ?: emptyArray()).filter { it.id != -1 }.map { it.id.toString() }.toSet()
+    val request = SubtitleAttachRequest(requestId, baseline, currentItemId())
+    subtitleRequests[requestId] = request
+    emitSubtitleStatus(requestId, "attaching")
+    if (!player.addSlave(IMedia.Slave.Type.Subtitle, uri, true)) {
+      subtitleRequests.remove(requestId)
+      emitSubtitleStatus(requestId, "failed", "VLC rejected the external subtitle source")
+      return
+    }
+    emitSubtitleStatus(requestId, "accepted")
+    (timeoutMillis ?: 15_000L).let { delay ->
+      val timeout = Runnable {
+        if (subtitleRequests.remove(requestId) === request) emitSubtitleStatus(requestId, "timeout", "No selected subtitle track was reported before the requested timeout")
+      }
+      request.timeout = timeout
+      progressHandler.postDelayed(timeout, delay)
+    }
+    handleSubtitleTrackChanges()
+  }
+  fun handleSubtitleTrackChanges() {
+    if (subtitleRequests.isEmpty()) return
+    val tracks = (player.spuTracks ?: emptyArray()).filter { it.id != -1 }
+    for ((requestId, request) in subtitleRequests.toMap()) {
+      if (currentItemId() != request.itemId) {
+        request.timeout?.let(progressHandler::removeCallbacks)
+        subtitleRequests.remove(requestId)
+        emitSubtitleStatus(requestId, "failed", "The playlist item changed before the subtitle track became available")
+        continue
+      }
+      val track = tracks.firstOrNull { it.id.toString() !in request.baseline } ?: continue
+      if (request.addedTrackId == null) {
+        request.addedTrackId = track.id.toString()
+        emitSubtitleStatus(requestId, "trackAvailable")
+      }
+      if (player.spuTrack == track.id) {
+        request.timeout?.let(progressHandler::removeCallbacks)
+        subtitleRequests.remove(requestId)
+        emitSubtitleStatus(requestId, "selected")
+      } else {
+        player.setSpuTrack(track.id)
+      }
+    }
+  }
+  fun retainSubtitleFile(file: File) { subtitleFiles.add(file) }
   private val progressHandler = android.os.Handler(android.os.Looper.getMainLooper())
   private var lastProgressKey = ""
   private val progressRunnable = object : Runnable {
@@ -172,6 +229,8 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
   var muted = false
   var audioDelayMillis = 0L
   var audioDelayApplied = false
+  var subtitleDelayMillis = 0L
+  var subtitleDelayApplied = false
   var systemArtwork: Bitmap? = null
   var playbackErrorCoverActive = false
     private set
@@ -371,6 +430,7 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
       lastDuration = 0
       videoAspectRatio = null
       audioDelayApplied = false
+      subtitleDelayApplied = false
     }
     playlistItems = items
     failedItems.retainAll(items.map { it.id }.toSet())
@@ -444,6 +504,7 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
     currentIndex = index
     transitionPending = true
     audioDelayApplied = false
+    subtitleDelayApplied = false
     val media = Media(libVlc, playlist[index])
     try { player.media = media } finally { media.release() }
     player.play()
@@ -499,6 +560,10 @@ private class PlayerSession(context: Context, options: List<String>? = null) {
 
   fun release() {
     released = true
+    subtitleRequests.values.forEach { it.timeout?.let(progressHandler::removeCallbacks) }
+    subtitleRequests.clear()
+    subtitleFiles.forEach { it.delete() }
+    subtitleFiles.clear()
     progressHandler.removeCallbacks(progressRunnable)
     onProgress = null
     onPlaylistEdited = null
@@ -1088,6 +1153,7 @@ class ExpoSummonVlcModule : Module() {
     val context = appContext.reactContext ?: throw IllegalStateException("React context is unavailable")
     val id = UUID.randomUUID().toString()
     val session = PlayerSession(context, options)
+    session.id = id
     Sessions.items[id] = session
     attachEventSink(session)
     session.onProgress = {
@@ -1117,6 +1183,7 @@ class ExpoSummonVlcModule : Module() {
             if (eventType == MediaPlayer.Event.TimeChanged && !session.transitionPending && session.player.isPlaying && session.player.time >= 1000) session.resetFailures()
             if (session.updateVideoAspectRatio()) session.pipControls?.refresh()
             if (eventType == MediaPlayer.Event.ESAdded || eventType == MediaPlayer.Event.ESDeleted || eventType == MediaPlayer.Event.ESSelected) {
+              session.handleSubtitleTrackChanges()
               session.onEvent?.invoke("onTracksChanged", mapOf("sessionId" to id, "revision" to generation.toString()))
             }
           }
@@ -1137,6 +1204,9 @@ class ExpoSummonVlcModule : Module() {
             if (eventType == MediaPlayer.Event.Playing) session.onPlaybackPlaying()
             if (eventType == MediaPlayer.Event.Playing && !session.audioDelayApplied) {
               session.audioDelayApplied = session.player.setAudioDelay(session.audioDelayMillis * 1000)
+            }
+            if (eventType == MediaPlayer.Event.Playing && !session.subtitleDelayApplied) {
+              session.subtitleDelayApplied = session.player.setSpuDelay(session.subtitleDelayMillis * 1000)
             }
             val state = session.state()
             if (state == "error") { session.output?.cancelPictureInPictureTransition(); session.clearAudioFocus() }
@@ -1206,7 +1276,7 @@ class ExpoSummonVlcModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("ExpoSummonVlc")
-    Events("onPlaybackStateChange", "onPlaybackProgress", "onPlaybackError", "onTracksChanged", "onPictureInPictureStateChange", "onPictureInPictureExitTest")
+    Events("onPlaybackStateChange", "onPlaybackProgress", "onPlaybackError", "onTracksChanged", "onSubtitleAttachmentStatus", "onPictureInPictureStateChange", "onPictureInPictureExitTest")
 
     AsyncFunction("startFrameProbe") { _: String ->
       unsupportedFrameProbe()
@@ -1318,6 +1388,55 @@ class ExpoSummonVlcModule : Module() {
       val selected = if (type == "audio") player.setAudioTrack(nativeId)
         else if (nativeId == -1 && player.spuTrack == -1) true else player.setSpuTrack(nativeId)
       check(selected) { "Track selection failed" }
+    }.runOnQueue(Queues.MAIN)
+
+    AsyncFunction("addSubtitle") { id: String, requestId: String, source: Map<String, String>, timeoutMillis: Double? ->
+      val session = Sessions.get(id)
+      val uri = when {
+        source.keys == setOf("uri") -> {
+          val value = source["uri"] ?: throw IllegalArgumentException("Subtitle URI is missing")
+          require(Uri.parse(value).scheme != null) { "Subtitle URI must be absolute" }
+          if (Uri.parse(value).scheme == "content") {
+            val context = appContext.reactContext ?: throw IllegalStateException("React context is unavailable")
+            val extension = Uri.parse(value).lastPathSegment?.substringAfterLast('.', "srt")?.takeIf { it.matches(Regex("[A-Za-z0-9]+")) } ?: "srt"
+            val file = File(context.cacheDir, "summon-vlc-subtitle-${UUID.randomUUID()}.$extension")
+            try {
+              context.contentResolver.openInputStream(Uri.parse(value))?.use { input -> file.outputStream().use { output -> input.copyTo(output) } }
+                ?: throw IllegalArgumentException("Subtitle URI could not be opened")
+            } catch (error: Exception) {
+              file.delete()
+              session.onEvent?.invoke("onSubtitleAttachmentStatus", mapOf("sessionId" to id, "requestId" to requestId,
+                "currentIndex" to session.currentIndex, "currentItemId" to session.currentItemId(), "status" to "failed", "message" to "Subtitle URI could not be copied locally"))
+              throw error
+            }
+            session.retainSubtitleFile(file)
+            Uri.fromFile(file).toString()
+          } else value
+        }
+        source.keys == setOf("content", "format") -> {
+          val format = source["format"] ?: ""
+          require(format in setOf("srt", "vtt", "ass", "ssa", "smi", "sami")) { "Unsupported subtitle format" }
+          val content = source["content"] ?: ""
+          val context = appContext.reactContext ?: throw IllegalStateException("React context is unavailable")
+          val file = File(context.cacheDir, "summon-vlc-subtitle-${UUID.randomUUID()}.$format")
+          try { file.writeText(content, Charsets.UTF_8) }
+          catch (error: Exception) {
+            file.delete()
+            session.onEvent?.invoke("onSubtitleAttachmentStatus", mapOf("sessionId" to id, "requestId" to requestId,
+              "currentIndex" to session.currentIndex, "currentItemId" to session.currentItemId(), "status" to "failed", "message" to "Subtitle content could not be saved locally"))
+            throw error
+          }
+          session.retainSubtitleFile(file)
+          Uri.fromFile(file).toString()
+        }
+        else -> {
+          session.onEvent?.invoke("onSubtitleAttachmentStatus", mapOf("sessionId" to id, "requestId" to requestId,
+            "currentIndex" to session.currentIndex, "currentItemId" to session.currentItemId(), "status" to "failed", "message" to "Expected a URI or content with a supported subtitle format"))
+          throw IllegalArgumentException("Expected a URI or content with a supported subtitle format")
+        }
+      }
+      require(timeoutMillis == null || (timeoutMillis.isFinite() && timeoutMillis > 0 && timeoutMillis % 1.0 == 0.0)) { "timeoutMillis must be a positive integer" }
+      session.attachSubtitle(uri, requestId, timeoutMillis?.toLong())
     }.runOnQueue(Queues.MAIN)
 
     AsyncFunction("createSession") { createPlayerSession(null) }.runOnQueue(Queues.MAIN)
@@ -1477,6 +1596,17 @@ class ExpoSummonVlcModule : Module() {
       session.audioDelayMillis = value
       session.audioDelayApplied = true
     }.runOnQueue(Queues.MAIN)
+    AsyncFunction("setSubtitleDelay") { id: String, delay: Double ->
+      require(delay.isFinite() && delay % 1.0 == 0.0 && kotlin.math.abs(delay) < Long.MAX_VALUE.toDouble() / 1000.0) {
+        "Subtitle delay must be an integer number of milliseconds within the native range"
+      }
+      val session = Sessions.get(id)
+      check(session.state() == "playing" || session.state() == "paused") { "Subtitle delay requires playing or paused media" }
+      val value = delay.toLong()
+      check(session.player.setSpuDelay(value * 1000)) { "Subtitle delay could not be set" }
+      session.subtitleDelayMillis = value
+      session.subtitleDelayApplied = true
+    }.runOnQueue(Queues.MAIN)
 
     AsyncFunction("getPlaybackStatus") { id: String ->
       val session = Sessions.get(id)
@@ -1488,6 +1618,7 @@ class ExpoSummonVlcModule : Module() {
         "positionMillis" to session.player.time.coerceAtLeast(0),
         "playbackRate" to session.playbackRate, "volume" to (session.volume / 100.0), "muted" to session.muted,
         "audioDelayMillis" to session.audioDelayMillis, "audioDelayApplied" to session.audioDelayApplied,
+        "subtitleDelayMillis" to session.subtitleDelayMillis, "subtitleDelayApplied" to session.subtitleDelayApplied,
         "durationMillis" to session.lastDuration,
         "isSeekable" to (session.player.isSeekable || (session.state() == "ended" && session.lastDuration > 0)),
         "repeatMode" to session.repeatMode, "shuffleEnabled" to session.shuffleEnabled,

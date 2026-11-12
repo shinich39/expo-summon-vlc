@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Asset } from 'expo-asset';
 import { Directory, File, Paths } from 'expo-file-system';
 import { AppState, Button, Image, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import Player, { PlayerView, type AlbumArt, type MediaArtwork, type MediaInspection, type MediaThumbnail, type PlaybackStatus, type PlaybackTracks, type PlaybackTrackType, type PlaylistItem, type RepeatMode, type SubtitleStyle, type VideoResizeMode } from '../src';
+import Player, { PlayerView, type AlbumArt, type ExternalSubtitleFormat, type MediaArtwork, type MediaInspection, type MediaThumbnail, type PlaybackStatus, type PlaybackTracks, type PlaybackTrackType, type PlaylistItem, type RepeatMode, type SubtitleStyle, type VideoResizeMode } from '../src';
 import FrameProbePreview from './FrameProbePreview';
 
 function formatTime(millis: number): string {
@@ -86,10 +86,12 @@ export default function App() {
   const [errorScreenTestResult, setErrorScreenTestResult] = useState<string | null>(null);
   const [errorScreenBlackConfirmed, setErrorScreenBlackConfirmed] = useState(false);
   const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>({ fontScale: 1.5, textColor: 0xffffff, backgroundColor: 0, backgroundOpacity: 0, outlineColor: 0, outlineWidth: 4, bottomMargin: 30, alignment: -1 });
+  const [subtitleDelayInput, setSubtitleDelayInput] = useState('0');
   const [appliedSubtitleStyle, setAppliedSubtitleStyle] = useState<SubtitleStyle | null>(null);
   const [playback, setPlayback] = useState<PlaybackStatus | null>(null);
   const [trackState, setTrackState] = useState<{ sessionId: string; snapshot: PlaybackTracks } | null>(null);
   const [trackBusy, setTrackBusy] = useState(false);
+  const [subtitleAttachmentLog, setSubtitleAttachmentLog] = useState<string[]>([]);
   const [history, setHistory] = useState<string[]>([]);
   const [barWidth, setBarWidth] = useState(0);
   const [preview, setPreview] = useState<number | null>(null);
@@ -179,6 +181,16 @@ export default function App() {
       void Player.getTracks(sessionId).then((result) => {
         if (sessionRef.current === sessionId && tracksRequest.current === request && trackSnapshot.current?.revision === result.revision) setTracks(result);
       }).catch(() => {});
+    });
+    return () => subscription.remove();
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const subscription = Player.addListener('onSubtitleAttachmentStatus', (event) => {
+      if (event.sessionId !== sessionId) return;
+      const line = `${event.requestId}: ${event.status}${event.message ? ` — ${event.message}` : ''}`;
+      setSubtitleAttachmentLog((items) => [line, ...items].slice(0, 12));
     });
     return () => subscription.remove();
   }, [sessionId]);
@@ -787,7 +799,33 @@ export default function App() {
     });
   }
 
-  async function startSubtitleTest() {
+  async function applySubtitleDelay() {
+    const id = sessionRef.current;
+    const delay = Number(subtitleDelayInput);
+    if (!id || !Number.isFinite(delay) || !Number.isInteger(delay)) {
+      setMessage('Subtitle delay must be an integer number of milliseconds.');
+      return;
+    }
+    try {
+      await Player.setSubtitleDelay(id, delay);
+      setPlayback(await Player.getPlaybackStatus(id));
+      setMessage(`Subtitle delay set to ${delay} ms (${delay > 0 ? 'later' : delay < 0 ? 'earlier' : 'synchronized'}).`);
+    } catch (error) { setMessage(`Subtitle delay: ${String(error)}`); }
+  }
+
+  function subtitleFixtureContent(format: ExternalSubtitleFormat): string {
+    const cue = 'External subtitle fixture';
+    switch (format) {
+      case 'srt': return `1\n00:00:01,000 --> 00:00:04,500\n${cue} — SRT\n\n2\n00:00:05,000 --> 00:00:08,500\nSecond SRT cue\n`;
+      case 'vtt': return `WEBVTT\n\n00:00:01.000 --> 00:00:04.500\n${cue} — VTT\n\n00:00:05.000 --> 00:00:08.500\nSecond VTT cue\n`;
+      case 'ass': return `[Script Info]\nTitle: External ASS fixture\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,28,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,1,2,0,2,20,20,30,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:04.50,Default,,0,0,0,,${cue} — ASS\n`;
+      case 'ssa': return `[Script Info]\nTitle: External SSA fixture\nScriptType: v4.00\n\n[V4 Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, TertiaryColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, AlphaLevel, Encoding\nStyle: Default,Arial,28,16777215,255,0,0,-1,0,1,2,0,2,20,20,30,0,1\n\n[Events]\nFormat: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: Marked=0,0:00:01.00,0:00:04.50,Default,,0,0,0,,${cue} — SSA\n`;
+      case 'smi':
+      case 'sami': return `<SAMI>\n<HEAD><STYLE TYPE="text/css"><!-- .ENCC { Name:English; lang:en-US; } --></STYLE></HEAD>\n<BODY><SYNC Start=1000><P Class=ENCC>${cue} — ${format.toUpperCase()}<SYNC Start=4500><P Class=ENCC>&nbsp;\n<SYNC Start=5000><P Class=ENCC>Second ${format.toUpperCase()} cue<SYNC Start=8500><P Class=ENCC>&nbsp;</BODY></SAMI>`;
+    }
+  }
+
+  async function startSubtitleTest(externalFormat?: ExternalSubtitleFormat) {
     if (sessionOperation.current || busy || probeActive || analysisBusy || (Platform.OS === 'android' && pipMode)) return;
     setAudioOnly(false);
     sessionOperation.current = true;
@@ -833,13 +871,18 @@ export default function App() {
       const snapshot = await selectTestSubtitle(newSession);
       if (mounted.current && sessionRef.current === newSession) {
         setTracks(snapshot);
+        if (externalFormat) {
+          const requestId = `${externalFormat}-${Date.now()}`;
+          setSubtitleAttachmentLog([]);
+          await Player.addSubtitle(newSession, requestId, { content: subtitleFixtureContent(externalFormat), format: externalFormat }, 15000);
+        }
         const pip = await Player.getPictureInPictureState(newSession);
         if (!mounted.current || sessionRef.current !== newSession) return;
         setPipSupported(pip.supported);
         setPipMode(pip.active);
         setPipReason(pip.reason);
-        setMessage('Subtitle test started. Video repeats automatically.');
-        record('Subtitle test started');
+        setMessage(externalFormat ? `${externalFormat.toUpperCase()} subtitle attachment requested; check the event log below.` : 'Subtitle test started. Video repeats automatically.');
+        record(externalFormat ? `${externalFormat.toUpperCase()} subtitle test started` : 'Subtitle test started');
       }
     } catch (error) {
       if (!mounted.current && newSession && sessionRef.current === newSession) {
@@ -1244,7 +1287,7 @@ export default function App() {
           </View>
         </View>)}
         <Text style={styles.heading}>Subtitle test</Text>
-        <Text>Choose a style below, then start the video with subtitles selected and repeat enabled.</Text>
+        <Text>Choose a style, then test embedded subtitles or attach external subtitles by format. The external tests use subtitle text passed directly to the native module.</Text>
         <Text>Session: {sessionBusy ? 'working…' : sessionId ? `active (${sessionId})` : 'released'} · Created: {sessionCounts.created} · Released: {sessionCounts.released}</Text>
         <Text>Counts track successful requests in this screen, not native memory usage.</Text>
         <View style={styles.controls}>
@@ -1272,7 +1315,18 @@ export default function App() {
           ))}
         </View>
         <Button title={`Bottom margin: ${subtitleStyle.bottomMargin}px`} onPress={() => setSubtitleStyle((s) => ({ ...s, bottomMargin: s.bottomMargin === 0 ? 30 : 0 }))} />
-        <Button title="Start subtitle test" disabled={sessionBusy || busy || probeActive || analysisBusy || (Platform.OS === 'android' && pipMode)} onPress={() => void startSubtitleTest()} />
+        <Button title="Start embedded subtitle test" disabled={sessionBusy || busy || probeActive || analysisBusy || (Platform.OS === 'android' && pipMode)} onPress={() => void startSubtitleTest()} />
+        <Text>External subtitle format tests</Text>
+        <View style={styles.controls}>
+          {(['srt', 'vtt', 'ass', 'ssa', 'smi', 'sami'] as const).map((format) => <Button key={format} title={`Test .${format}`} disabled={sessionBusy || busy || probeActive || analysisBusy || (Platform.OS === 'android' && pipMode)} onPress={() => void startSubtitleTest(format)} />)}
+        </View>
+        {subtitleAttachmentLog.map((line, index) => <Text key={`${index}-${line}`} selectable>{line}</Text>)}
+        <Text>Subtitle delay in milliseconds (positive = later, negative = earlier)</Text>
+        <View style={styles.controls}>
+          <TextInput style={styles.input} value={subtitleDelayInput} onChangeText={setSubtitleDelayInput} keyboardType="numbers-and-punctuation" />
+          <Button title="Apply subtitle delay" disabled={!sessionId || sessionBusy || busy} onPress={() => void applySubtitleDelay()} />
+          <Text>Applied: {playback?.subtitleDelayApplied ? `${playback.subtitleDelayMillis} ms` : 'not confirmed for current item'}</Text>
+        </View>
         {Platform.OS === 'ios' && <Button title="Apply size to current session" disabled={!sessionId || sessionBusy} onPress={() => { if (sessionId) void Player.setSubtitleFontScale(sessionId, subtitleStyle.fontScale).catch((error: unknown) => setMessage(`Subtitle size: ${String(error)}`)); }} />}
         <Text>Video 1 URL</Text>
         <TextInput style={styles.input} value={firstUri} onChangeText={(text) => { setFirstUri(text); setAnalysisUri(null); }} autoCapitalize="none" autoCorrect={false} />

@@ -1,11 +1,12 @@
 import { NativeModule, requireNativeModule } from 'expo';
-import type { AlbumArt, MediaArtwork, MediaArtworkSource, MediaInspection, MediaThumbnail, PictureInPictureExitTestEvent, PictureInPictureState, PictureInPictureStateChange, PlaybackErrorEvent, PlaybackFailurePolicy, PlaybackProgress, PlaybackStateChange, PlaybackStatus, PlaybackTracks, PlaybackTrackType, PlaylistItem, RepeatMode, SeekOptions, SubtitleStyle, SubtitleStyleCapabilities } from './ExpoSummonVlc.types';
+import type { AlbumArt, ExternalSubtitleSource, MediaArtwork, MediaArtworkSource, MediaInspection, MediaThumbnail, PictureInPictureExitTestEvent, PictureInPictureState, PictureInPictureStateChange, PlaybackErrorEvent, PlaybackFailurePolicy, PlaybackProgress, PlaybackStateChange, PlaybackStatus, PlaybackTracks, PlaybackTrackType, PlaylistItem, RepeatMode, SeekOptions, SubtitleAttachmentEvent, SubtitleStyle, SubtitleStyleCapabilities } from './ExpoSummonVlc.types';
 
 declare class ExpoSummonVlcModule extends NativeModule<{
   onPlaybackStateChange: (event: PlaybackStateChange) => void;
   onPlaybackProgress: (event: PlaybackProgress) => void;
   onPlaybackError: (event: PlaybackErrorEvent) => void;
   onTracksChanged: (event: { sessionId: string; revision: string }) => void;
+  onSubtitleAttachmentStatus: (event: SubtitleAttachmentEvent) => void;
   onPictureInPictureStateChange: (event: PictureInPictureStateChange) => void;
   onPictureInPictureExitTest: (event: PictureInPictureExitTestEvent) => void;
 }> {
@@ -48,6 +49,8 @@ declare class ExpoSummonVlcModule extends NativeModule<{
   getTracks(sessionId: string): Promise<PlaybackTracks>;
   /** Pass null to disable subtitles; audio tracks cannot be disabled here. */
   selectTrack(sessionId: string, type: PlaybackTrackType, id: string | null, revision: string): Promise<void>;
+  /** Attach one external subtitle at a time to the current item. `accepted` means VLC accepted the source; listen for `selected` to confirm it became active. Timeout defaults to 15 seconds and has no upper limit. */
+  addSubtitle(sessionId: string, requestId: string, source: ExternalSubtitleSource, timeoutMillis?: number): Promise<void>;
   /** iOS defaults to fast. Android uses its default seek and rejects precise. */
   seekTo(sessionId: string, positionMillis: number, options?: SeekOptions): Promise<void>;
   /** Requested rate from 0.25 to 4; support depends on the media. */
@@ -57,6 +60,8 @@ declare class ExpoSummonVlcModule extends NativeModule<{
   setMuted(sessionId: string, muted: boolean): Promise<void>;
   /** Audio offset from -10000 to 10000 ms; positive values delay audio. */
   setAudioDelay(sessionId: string, delayMillis: number): Promise<void>;
+  /** Subtitle offset in milliseconds; positive delays subtitles, negative advances them. Preserved across playlist transitions. */
+  setSubtitleDelay(sessionId: string, delayMillis: number): Promise<void>;
   getPictureInPictureState(sessionId: string): Promise<PictureInPictureState>;
   startPictureInPicture(sessionId: string): Promise<void>;
   /** Requests exit; observe the PiP state event for completion. Android returns the activity to the foreground. */

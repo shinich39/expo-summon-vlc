@@ -187,7 +187,14 @@ synchronization depends on the media and output device.
 
 ```ts
 await Player.setAudioDelay(sessionId, 100);
+await Player.setSubtitleDelay(sessionId, -250);
 ```
+
+Subtitle delay uses milliseconds as well. Positive values show subtitles later;
+negative values show them earlier. The requested value is reapplied when the
+playlist item changes, and `getPlaybackStatus` reports `subtitleDelayMillis`
+and `subtitleDelayApplied`. The **Subtitle test** section has a field and button
+for trying positive and negative offsets.
 
 The first item starts after preparation. Use **Previous** and **Next** to inspect
 transitions, including rapid successive requests. **Repeat** cycles through

@@ -23,6 +23,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)setPlaybackRate:(float)rate;
 - (BOOL)setSoftwareVolume:(int)volume;
 - (BOOL)setAudioDelayMillis:(int64_t)delayMillis NS_SWIFT_NAME(setAudioDelay(millis:));
+- (BOOL)setSubtitleDelayMillis:(int64_t)delayMillis NS_SWIFT_NAME(setSubtitleDelay(millis:));
 - (BOOL)isPlayerStopped;
 - (BOOL)nativeIsSeekable;
 - (BOOL)seekToMillis:(int64_t)millis fast:(BOOL)fast NS_SWIFT_NAME(seek(toMillis:fast:));
@@ -37,6 +38,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)loadMedia:(VLCMedia *)media NS_SWIFT_NAME(loadMedia(_:));
 - (nullable NSArray<NSDictionary<NSString *, id> *> *)tracksForType:(NSString *)type NS_SWIFT_NAME(tracks(for:));
 - (BOOL)selectTrackForType:(NSString *)type identifier:(nullable NSString *)identifier NS_SWIFT_NAME(selectTrack(for:identifier:));
+- (BOOL)addSubtitleURI:(NSString *)uri NS_SWIFT_NAME(addSubtitle(uri:));
 - (void)setListRepeatMode:(NSString *)mode NS_SWIFT_NAME(setListRepeatMode(_:));
 - (void)playListItemAtIndex:(NSUInteger)index NS_SWIFT_NAME(playListItem(at:));
 - (void)shutdown;

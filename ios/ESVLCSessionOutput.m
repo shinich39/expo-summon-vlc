@@ -115,6 +115,7 @@ static const struct libvlc_media_player_watch_time_cbs ESClockCallbacks = {
 - (BOOL)setPlaybackRate:(float)rate { return _native && libvlc_media_player_set_rate(_native, rate) == 0; }
 - (BOOL)setSoftwareVolume:(int)volume { return _native && libvlc_audio_set_volume(_native, volume) == 0; }
 - (BOOL)setAudioDelayMillis:(int64_t)delayMillis { return _native && libvlc_audio_set_delay(_native, delayMillis * 1000) == 0; }
+- (BOOL)setSubtitleDelayMillis:(int64_t)delayMillis { return _native && libvlc_video_set_spu_delay(_native, delayMillis * 1000) == 0; }
 - (VLCMediaPlayerState)state {
   if (!_native) return VLCMediaPlayerStateStopped;
   switch (libvlc_media_player_get_state(_native)) {
@@ -300,6 +301,10 @@ static libvlc_track_type_t ESTrackType(NSString *type) {
   }
   libvlc_media_tracklist_delete(list);
   return found;
+}
+- (BOOL)addSubtitleURI:(NSString *)uri {
+  if (!_native || uri.length == 0) return NO;
+  return libvlc_media_player_add_slave(_native, libvlc_media_slave_type_subtitle, uri.UTF8String, true) == 0;
 }
 - (void)setListRepeatMode:(NSString *)mode {
   if (!_list) return;
